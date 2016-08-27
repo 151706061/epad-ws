@@ -127,6 +127,7 @@ import edu.stanford.epad.dtos.EPADAIM;
 import edu.stanford.epad.dtos.EPADAIMList;
 import edu.stanford.epad.dtos.EPADData;
 import edu.stanford.epad.dtos.EPADDataList;
+import edu.stanford.epad.dtos.EPADError;
 import edu.stanford.epad.dtos.EPADEventLogList;
 import edu.stanford.epad.dtos.EPADFile;
 import edu.stanford.epad.dtos.EPADFileList;
@@ -167,6 +168,7 @@ import edu.stanford.epad.epadws.epaddb.EpadDatabase;
 import edu.stanford.epad.epadws.handlers.HandlerUtil;
 import edu.stanford.epad.epadws.handlers.dicom.DSOUtil;
 import edu.stanford.epad.epadws.handlers.dicom.DownloadUtil;
+import edu.stanford.epad.epadws.models.Project;
 import edu.stanford.epad.epadws.models.RemotePACQuery;
 import edu.stanford.epad.epadws.models.User;
 import edu.stanford.epad.epadws.processing.pipeline.task.EpadStatisticsTask;
@@ -176,6 +178,7 @@ import edu.stanford.epad.epadws.queries.EpadOperations;
 import edu.stanford.epad.epadws.security.EPADSession;
 import edu.stanford.epad.epadws.security.EPADSessionOperations;
 import edu.stanford.epad.epadws.service.DefaultEpadProjectOperations;
+import edu.stanford.epad.epadws.service.EpadProjectOperations;
 import edu.stanford.epad.epadws.service.PluginOperations;
 import edu.stanford.epad.epadws.service.RemotePACService;
 import edu.stanford.epad.epadws.service.TCIAService;
@@ -203,6 +206,7 @@ public class EPADGetHandler
 	static Map<String, String> lastRequest = new HashMap<String, String>();
 	protected static int handleGet(HttpServletRequest httpRequest, HttpServletResponse httpResponse, PrintWriter responseStream, String username, String sessionID)
 	{
+		
 		EpadOperations epadOperations = DefaultEpadOperations.getInstance();
 		PluginOperations pluginOperations= PluginOperations.getInstance();
 		String pathInfo = httpRequest.getPathInfo();
@@ -217,6 +221,7 @@ public class EPADGetHandler
 			int count = getInt(httpRequest.getParameter("count"));
 			if (count == 0) count = 5000;
 			long starttime = System.currentTimeMillis();
+			String subjectUIDs = httpRequest.getParameter("subjectUIDs");
 			String studyUIDs = httpRequest.getParameter("studyUIDs");
 			String seriesUIDs = httpRequest.getParameter("seriesUIDs");
 			if (HandlerUtil.matchesTemplate(ProjectsRouteTemplates.PROJECT_LIST, pathInfo)) {
@@ -224,7 +229,8 @@ public class EPADGetHandler
 				if ("true".equalsIgnoreCase(httpRequest.getParameter("annotationCount")))
 					annotationCount = true;
 				boolean ignoreSystem = "false".equalsIgnoreCase(httpRequest.getParameter("system"));
-				EPADProjectList projectList = epadOperations.getProjectDescriptions(username, sessionID, searchFilter, annotationCount, ignoreSystem);
+				boolean includeAnnotationStatus = "true".equalsIgnoreCase(httpRequest.getParameter("includeAnnotationStatus"));
+				EPADProjectList projectList = epadOperations.getProjectDescriptions(username, sessionID, searchFilter, annotationCount, ignoreSystem, includeAnnotationStatus);
 				responseStream.append(projectList.toJSON());
 
 				statusCode = HttpServletResponse.SC_OK;
@@ -233,16 +239,41 @@ public class EPADGetHandler
 				if ("false".equalsIgnoreCase(httpRequest.getParameter("annotationCount")))
 					annotationCount = false;
 				ProjectReference projectReference = ProjectReference.extract(ProjectsRouteTemplates.PROJECT, pathInfo);
+				boolean includeAnnotationStatus = "true".equalsIgnoreCase(httpRequest.getParameter("includeAnnotationStatus"));
 				if (projectReference.projectID.equals(EPADConfig.xnatUploadProjectID))
 					annotationCount = false;
-				EPADProject project = epadOperations.getProjectDescription(projectReference, username, sessionID, annotationCount);
-				if (project != null) {
-					log.info("Project aim count:" + project.numberOfAnnotations);
-					responseStream.append(project.toJSON());
-					statusCode = HttpServletResponse.SC_OK;
-				} else
-					throw new Exception("Project " + projectReference.projectID + " not found");
-
+				//ml added for project download
+				boolean includeAims = "true".equalsIgnoreCase(httpRequest.getParameter("includeAims"));
+				if (returnStream(httpRequest)) {
+					DownloadUtil.downloadProject(true, httpResponse, projectReference, username, sessionID, searchFilter, subjectUIDs, includeAims);
+				}else if (returnConnected(httpRequest)) { //ml connected data for deletion
+					//need to get all subjects within and return their connected projects
+					if (searchFilter ==null) {
+						searchFilter= new EPADSearchFilter();
+					}
+					log.info("get subjects for project " + projectReference.projectID );
+					EPADSubjectList subjects= epadOperations.getSubjectDescriptions(projectReference.projectID, username, sessionID, searchFilter, start, count, "", annotationCount);
+					EPADProjectList allProjectList = new EPADProjectList();
+					for (EPADSubject subj: subjects.ResultSet.Result) {
+						EPADProjectList projectList= epadOperations.getProjectsForSubject( username,  sessionID,  searchFilter,  false, subj.subjectID);
+						log.info("get projects for subject " + subj.subjectID + " size " + projectList.ResultSet.Result.size() );
+						allProjectList.ResultSet.addAll(projectList.ResultSet);
+					}
+					
+					log.info("removing project " + projectReference.projectID  );
+					allProjectList.removeEPADProject(projectReference.projectID);
+					
+					responseStream.append(allProjectList.toJSON());
+				} else {
+					EPADProject project = epadOperations.getProjectDescription(projectReference, username, sessionID, annotationCount, includeAnnotationStatus);
+				
+					if (project != null) {
+						log.info("Project aim count:" + project.numberOfAnnotations);
+						responseStream.append(project.toJSON());
+					} else
+						throw new Exception("Project " + projectReference.projectID + " not found");
+				}
+				statusCode = HttpServletResponse.SC_OK;
 			} else if (HandlerUtil.matchesTemplate(ProjectsRouteTemplates.SUBJECT_LIST, pathInfo)) {
 				ProjectReference projectReference = ProjectReference.extract(ProjectsRouteTemplates.SUBJECT_LIST, pathInfo);
 				if (false && host != null && host.contains("epad-dev")) {
@@ -257,6 +288,7 @@ public class EPADGetHandler
 				
 				String sortField = httpRequest.getParameter("sortField");
 				boolean unassignedOnly = "true".equalsIgnoreCase(httpRequest.getParameter("unassignedOnly"));
+				boolean includeAnnotationStatus = "true".equalsIgnoreCase(httpRequest.getParameter("includeAnnotationStatus"));
 				boolean annotationCount = true;
 				if ("false".equalsIgnoreCase(httpRequest.getParameter("annotationCount")))
 					annotationCount = false;
@@ -279,7 +311,7 @@ public class EPADGetHandler
 				else
 				{
 					subjectList = epadOperations.getSubjectDescriptions(projectReference.projectID, username,
-						sessionID, searchFilter, start, count, sortField, annotationCount);
+						sessionID, searchFilter, start, count, sortField, annotationCount, includeAnnotationStatus);
 				}
 				if (annotationCountOnly) // What a stupid request!
 				{
@@ -305,12 +337,27 @@ public class EPADGetHandler
 			} else if (HandlerUtil.matchesTemplate(ProjectsRouteTemplates.SUBJECT, pathInfo)) {
 				SubjectReference subjectReference = SubjectReference.extract(ProjectsRouteTemplates.SUBJECT, pathInfo);
 				boolean includeAims = "true".equalsIgnoreCase(httpRequest.getParameter("includeAims"));
-				if (returnFile(httpRequest)) {
+				boolean includeAnnotationStatus = "true".equalsIgnoreCase(httpRequest.getParameter("includeAnnotationStatus"));
+				//ml multiple subjects
+				if (subjectReference.subjectID.contains(",") && returnStream(httpRequest) ) {
+					subjectUIDs=subjectReference.subjectID;
+					DownloadUtil.downloadSubjects(true, httpResponse, subjectReference.subjectID, username, sessionID, searchFilter, includeAims);
+
+				}else if (returnConnected(httpRequest)) { //ml connected data for deletion
+					log.info("get projects for subject " + subjectReference.subjectID );
+					if (searchFilter ==null) {
+						searchFilter= new EPADSearchFilter();
+					}
+					EPADProjectList projectList = epadOperations.getProjectsForSubject( username,  sessionID,  searchFilter,  false, subjectReference.subjectID);
+					projectList.removeEPADProject(subjectReference.projectID);
+					responseStream.append(projectList.toJSON());
+	
+				}else if (returnFile(httpRequest)) {
 					DownloadUtil.downloadSubject(false, httpResponse, subjectReference, username, sessionID, searchFilter, studyUIDs, includeAims);
 				} else if (returnStream(httpRequest)) {
 					DownloadUtil.downloadSubject(true, httpResponse, subjectReference, username, sessionID, searchFilter, studyUIDs, includeAims);
 				} else {
-					EPADSubject subject = epadOperations.getSubjectDescription(subjectReference, username, sessionID);
+					EPADSubject subject = epadOperations.getSubjectDescription(subjectReference, username, sessionID, includeAnnotationStatus);
 					if (subject != null) {
 						log.info("subject aim count:" + subject.numberOfAnnotations);
 						responseStream.append(subject.toJSON());
@@ -323,10 +370,11 @@ public class EPADGetHandler
 
 			} else if (HandlerUtil.matchesTemplate(ProjectsRouteTemplates.STUDY_LIST, pathInfo)) {
 				SubjectReference subjectReference = SubjectReference.extract(ProjectsRouteTemplates.STUDY_LIST, pathInfo);
+				boolean includeAnnotationStatus = "true".equalsIgnoreCase(httpRequest.getParameter("includeAnnotationStatus"));
 				if (subjectReference.subjectID.equals("null"))
 					throw new Exception("Patient ID in rest call is null:" + pathInfo);
 				EPADStudyList studyList = epadOperations.getStudyDescriptions(subjectReference, username, sessionID,
-						searchFilter);
+						searchFilter, includeAnnotationStatus);
 				log.info("Returning " + studyList.ResultSet.totalRecords + " studies");
 				responseStream.append(studyList.toJSON());
 				statusCode = HttpServletResponse.SC_OK;
@@ -334,7 +382,17 @@ public class EPADGetHandler
 			} else if (HandlerUtil.matchesTemplate(ProjectsRouteTemplates.STUDY, pathInfo)) {
 				StudyReference studyReference = StudyReference.extract(ProjectsRouteTemplates.STUDY, pathInfo);
 				boolean includeAims = "true".equalsIgnoreCase(httpRequest.getParameter("includeAims"));
-				if (returnFile(httpRequest)) {
+				boolean includeAnnotationStatus = "true".equalsIgnoreCase(httpRequest.getParameter("includeAnnotationStatus"));
+				if (returnConnected(httpRequest)) { //ml connected data for deletion
+					log.info("get projects for study " + studyReference.studyUID );
+					if (searchFilter ==null) {
+						searchFilter= new EPADSearchFilter();
+					}
+					EPADProjectList projectList = epadOperations.getProjectsForStudy( username,  sessionID,  searchFilter,  false, studyReference.studyUID);
+					projectList.removeEPADProject(studyReference.projectID);
+					responseStream.append(projectList.toJSON());
+	
+				}else if (returnFile(httpRequest)) {
 					if (studyReference.studyUID.contains(","))
 						DownloadUtil.downloadStudies(false, httpResponse, studyReference.studyUID, username, sessionID, includeAims);
 					else
@@ -345,30 +403,51 @@ public class EPADGetHandler
 					else
 						DownloadUtil.downloadStudy(true, httpResponse, studyReference, username, sessionID, searchFilter, seriesUIDs, includeAims);
 				} else {
-					EPADStudy study = epadOperations.getStudyDescription(studyReference, username, sessionID);
+					try {
+					EPADStudy study = epadOperations.getStudyDescription(studyReference, username, sessionID, includeAnnotationStatus);
 					if (study != null) {
 						responseStream.append(study.toJSON());
 					} else {
 						log.info("Study " + studyReference.studyUID + " not found");
-						throw new Exception("Study " + studyReference.studyUID + " not found");
+//						throw new Exception("Study " + studyReference.studyUID + " not found");
+						//ml error payload
+						EPADError err=new EPADError(1000, username, studyReference.projectID, studyReference.subjectID, studyReference.studyUID, "" , "", -1, "Study not found", "Study " + studyReference.studyUID + " not found. Please check studyId");
+						responseStream.append(err.toJSON());
+						statusCode = HttpServletResponse.SC_NOT_FOUND;
+					}
+					}catch (Exception e) {
+						EPADError err=new EPADError(1000, username, studyReference.projectID, studyReference.subjectID, studyReference.studyUID, "" , "", -1, "Study not found", "Study " + studyReference.studyUID + " not found. Please check studyId");
+						responseStream.append(err.toJSON());
+						statusCode = HttpServletResponse.SC_NOT_FOUND;
 					}
 				}
 				statusCode = HttpServletResponse.SC_OK;
 				
 			} else if (HandlerUtil.matchesTemplate(ProjectsRouteTemplates.SERIES_LIST, pathInfo)) {
 				boolean filterDSO = "true".equalsIgnoreCase(httpRequest.getParameter("filterDSO"));
+				boolean includeAnnotationStatus = "true".equalsIgnoreCase(httpRequest.getParameter("includeAnnotationStatus"));
 				StudyReference studyReference = StudyReference.extract(ProjectsRouteTemplates.SERIES_LIST, pathInfo);
 				if (studyReference.subjectID.equals("null"))
 					throw new Exception("Patient ID in rest call is null:" + pathInfo);
 				EPADSeriesList seriesList = epadOperations.getSeriesDescriptions(studyReference, username, sessionID,
-						searchFilter, filterDSO);
+						searchFilter, filterDSO, includeAnnotationStatus);
 				responseStream.append(seriesList.toJSON());
 				statusCode = HttpServletResponse.SC_OK;
 
 			} else if (HandlerUtil.matchesTemplate(ProjectsRouteTemplates.SERIES, pathInfo)) {
 				SeriesReference seriesReference = SeriesReference.extract(ProjectsRouteTemplates.SERIES, pathInfo);
 				boolean includeAims = "true".equalsIgnoreCase(httpRequest.getParameter("includeAims"));
-				if (returnFile(httpRequest)) {
+				boolean includeAnnotationStatus = "true".equalsIgnoreCase(httpRequest.getParameter("includeAnnotationStatus"));
+				if (returnConnected(httpRequest)) { //ml connected data for deletion
+					log.info("get projects for study " + seriesReference.studyUID );
+					if (searchFilter ==null) {
+						searchFilter= new EPADSearchFilter();
+					}
+					EPADProjectList projectList = epadOperations.getProjectsForStudy( username,  sessionID,  searchFilter,  false, seriesReference.studyUID);
+					projectList.removeEPADProject(seriesReference.projectID);
+					responseStream.append(projectList.toJSON());
+	
+				}else if (returnFile(httpRequest)) {
 					if (seriesReference.seriesUID.contains(","))
 						DownloadUtil.downloadSeries(false, httpResponse, seriesReference.seriesUID, username, sessionID, includeAims);
 					else
@@ -379,7 +458,7 @@ public class EPADGetHandler
 					else
 						DownloadUtil.downloadSeries(true, httpResponse, seriesReference, username, sessionID, includeAims);
 				} else {
-					EPADSeries series = epadOperations.getSeriesDescription(seriesReference, username, sessionID);
+					EPADSeries series = epadOperations.getSeriesDescription(seriesReference, username, sessionID, includeAnnotationStatus);
 					if (series != null) {
 						responseStream.append(series.toJSON());
 					} else {
@@ -507,9 +586,30 @@ public class EPADGetHandler
 				responseStream.append(studyList.toJSON());
 				statusCode = HttpServletResponse.SC_OK;
 
-
 				/**
-				 * Studies routes. These short cuts are used when the invoker does not have a project or subject ID.
+				 * Studies routes. for getting old studies
+				 */
+			} else if (HandlerUtil.matchesTemplate(StudiesRouteTemplates.STUDY_LIST, pathInfo)) {
+				//older than in days
+				String olderThan_Days = httpRequest.getParameter("olderThan_Days");
+				Integer olderThan ;
+				if (olderThan_Days!=null) {
+					try{
+						olderThan = Integer.parseInt(olderThan_Days);
+					}catch (NumberFormatException ne){
+						olderThan=EPADConfig.olderThan_Days; //couldn't parse,use the one at the config file
+					}
+				}else {
+					olderThan=EPADConfig.olderThan_Days; //no param,use the one at the config file
+				}
+				
+				EPADStudyList studyList = epadOperations.getStudyDescriptions( username, sessionID,olderThan);
+				log.info("Returning " + studyList.ResultSet.totalRecords + " studies that are not accesses in " + olderThan + " days");
+				responseStream.append(studyList.toJSON());
+				statusCode = HttpServletResponse.SC_OK;
+				
+				/**
+				 * Study routes. These short cuts are used when the invoker does not have a project or subject ID.
 				 */
 			} else if (HandlerUtil.matchesTemplate(StudiesRouteTemplates.STUDY, pathInfo)) {
 				StudyReference studyReference = StudyReference.extract(StudiesRouteTemplates.STUDY, pathInfo);
@@ -637,13 +737,38 @@ public class EPADGetHandler
 				AIMReference aimReference = AIMReference.extract(ProjectsRouteTemplates.PROJECT_AIM, pathInfo);
 				EPADAIM aim = epadOperations
 						.getProjectAIMDescription(projectReference, aimReference.aimID, username, sessionID);
+				if (returnConnected(httpRequest)) { //ml
+					EPADProjectList projectList = new EPADProjectList();
+					log.info("project "+ aim.projectID + " username " +username);
+					projectList.addEPADProject(epadOperations.getProjectDescription(new ProjectReference(aim.projectID), username, sessionID, false));
+					String[] sharedProjs= aim.sharedProjects.split(",");
+					for (String sharedProj: sharedProjs) {
+						projectList.addEPADProject(epadOperations.getProjectDescription(new ProjectReference(sharedProj), username, sessionID, false));
+						
+					}
+					for (EPADProject prj: projectList.ResultSet.Result) {
+						log.info("project " + prj.id  );
+					}
+					log.info("removing project " + projectReference.projectID  );
+					projectList.removeEPADProject(projectReference.projectID);
+					responseStream.append(projectList.toJSON());
+					statusCode = HttpServletResponse.SC_OK;
+					return statusCode;
+					
+				}
+				
 				if (!UserProjectService.isCollaborator(sessionID, username, aim.projectID))
 					username = null;
 				if (returnSummary(httpRequest))
 				{	
 					responseStream.append(aim.toJSON());
 				}
-				else if ("data".equals(httpRequest.getParameter("format")))
+				else if (returnJson(httpRequest))
+				{
+					EPADAIMList aims = new EPADAIMList();
+					aims.addAIM(aim);
+					AIMUtil.queryAIMImageJsonAnnotations(responseStream, aims, username, sessionID);					
+				}else if ("data".equals(httpRequest.getParameter("format")))
 				{
 					String templateName = httpRequest.getParameter("templateName");
 					if (templateName == null || templateName.trim().length() == 0)
@@ -689,6 +814,12 @@ public class EPADGetHandler
 				{	
 					responseStream.append(aim.toJSON());
 				}
+				else if (returnJson(httpRequest))
+				{
+					EPADAIMList aims = new EPADAIMList();
+					aims.addAIM(aim);
+					AIMUtil.queryAIMImageJsonAnnotations(responseStream, aims, username, sessionID);					
+				}
 				else
 				{
 					AIMUtil.queryAIMImageAnnotations(responseStream, subjectReference.projectID, AIMSearchType.ANNOTATION_UID,
@@ -726,7 +857,12 @@ public class EPADGetHandler
 				{	
 					responseStream.append(aim.toJSON());
 				}
-				else if ("data".equals(httpRequest.getParameter("format")))
+				else if (returnJson(httpRequest))
+				{
+					EPADAIMList aims = new EPADAIMList();
+					aims.addAIM(aim);
+					AIMUtil.queryAIMImageJsonAnnotations(responseStream, aims, username, sessionID);					
+				}else if ("data".equals(httpRequest.getParameter("format")))
 				{
 					String templateName = httpRequest.getParameter("templateName");
 					if (templateName == null || templateName.trim().length() == 0)
@@ -784,7 +920,12 @@ public class EPADGetHandler
 					String json = AIMUtil.readPlugInData(aim, templateName, sessionID);
 					responseStream.append(json);
 				}
-				else
+				else if (returnJson(httpRequest))
+				{
+					EPADAIMList aims = new EPADAIMList();
+					aims.addAIM(aim);
+					AIMUtil.queryAIMImageJsonAnnotations(responseStream, aims, username, sessionID);					
+				}else
 				{
 					AIMUtil.queryAIMImageAnnotations(responseStream, seriesReference.projectID, AIMSearchType.ANNOTATION_UID,
 							aim.aimID, username);					
@@ -812,11 +953,17 @@ public class EPADGetHandler
 
 			} else if (HandlerUtil.matchesTemplate(ProjectsRouteTemplates.IMAGE_AIM, pathInfo)) {
 				ImageReference imageReference = ImageReference.extract(ProjectsRouteTemplates.IMAGE_AIM, pathInfo);
-				AIMReference aimReference = AIMReference.extract(ProjectsRouteTemplates.SERIES_AIM, pathInfo);
+				AIMReference aimReference = AIMReference.extract(ProjectsRouteTemplates.IMAGE_AIM, pathInfo);
 				EPADAIM aim = epadOperations.getImageAIMDescription(imageReference, aimReference.aimID, username, sessionID);
 				if (returnSummary(httpRequest))
 				{	
 					responseStream.append(aim.toJSON());
+				}
+				else if (returnJson(httpRequest))
+				{
+					EPADAIMList aims = new EPADAIMList();
+					aims.addAIM(aim);
+					AIMUtil.queryAIMImageJsonAnnotations(responseStream, aims, username, sessionID);					
 				}
 				else if ("data".equals(httpRequest.getParameter("format")))
 				{
@@ -860,6 +1007,12 @@ public class EPADGetHandler
 				if (returnSummary(httpRequest))
 				{	
 					responseStream.append(aim.toJSON());
+				}
+				else if (returnJson(httpRequest))
+				{
+					EPADAIMList aims = new EPADAIMList();
+					aims.addAIM(aim);
+					AIMUtil.queryAIMImageJsonAnnotations(responseStream, aims, username, sessionID);					
 				}
 				else if ("data".equals(httpRequest.getParameter("format")))
 				{
@@ -920,6 +1073,12 @@ public class EPADGetHandler
 				{	
 					responseStream.append(aim.toJSON());
 				}
+				else if (returnJson(httpRequest))
+				{
+					EPADAIMList aims = new EPADAIMList();
+					aims.addAIM(aim);
+					AIMUtil.queryAIMImageJsonAnnotations(responseStream, aims, username, sessionID);					
+				}
 				else
 				{
 					AIMUtil.queryAIMImageAnnotations(responseStream, studyReference.projectID, AIMSearchType.ANNOTATION_UID,
@@ -958,6 +1117,12 @@ public class EPADGetHandler
 				{	
 					responseStream.append(aim.toJSON());
 				}
+				else if (returnJson(httpRequest))
+				{
+					EPADAIMList aims = new EPADAIMList();
+					aims.addAIM(aim);
+					AIMUtil.queryAIMImageJsonAnnotations(responseStream, aims, username, sessionID);					
+				}
 				else
 				{
 					AIMUtil.queryAIMImageAnnotations(responseStream, seriesReference.projectID, AIMSearchType.ANNOTATION_UID,
@@ -991,6 +1156,12 @@ public class EPADGetHandler
 				if (returnSummary(httpRequest))
 				{	
 					responseStream.append(aim.toJSON());
+				}
+				else if (returnJson(httpRequest))
+				{
+					EPADAIMList aims = new EPADAIMList();
+					aims.addAIM(aim);
+					AIMUtil.queryAIMImageJsonAnnotations(responseStream, aims, username, sessionID);					
 				}
 				else
 				{
@@ -1026,6 +1197,12 @@ public class EPADGetHandler
 				if (returnSummary(httpRequest))
 				{	
 					responseStream.append(aim.toJSON());
+				}
+				else if (returnJson(httpRequest))
+				{
+					EPADAIMList aims = new EPADAIMList();
+					aims.addAIM(aim);
+					AIMUtil.queryAIMImageJsonAnnotations(responseStream, aims, username, sessionID);					
 				}
 				else
 				{
@@ -1063,6 +1240,12 @@ public class EPADGetHandler
 				if (returnSummary(httpRequest))
 				{	
 					responseStream.append(aim.toJSON());
+				}
+				else if (returnJson(httpRequest))
+				{
+					EPADAIMList aims = new EPADAIMList();
+					aims.addAIM(aim);
+					AIMUtil.queryAIMImageJsonAnnotations(responseStream, aims, username, sessionID);					
 				}
 				else
 				{
@@ -1156,6 +1339,11 @@ public class EPADGetHandler
 				String version = httpRequest.getParameter("version");
 				AIMReference aimReference = AIMReference.extract(AimsRouteTemplates.AIM, pathInfo);
 				EPADAIM aim = epadOperations.getAIMDescription(aimReference.aimID, username, sessionID);
+				//ml return not found status if not found
+				if (aim == null) {
+					return HttpServletResponse.SC_NOT_FOUND;
+				}
+					
 				if (returnSummary(httpRequest))
 				{	
 					if ("all".equalsIgnoreCase(version))
@@ -1175,6 +1363,12 @@ public class EPADGetHandler
 					}
 					else
 						responseStream.append(aim.toJSON());
+				}
+				else if (returnJson(httpRequest))
+				{
+					EPADAIMList aims = new EPADAIMList();
+					aims.addAIM(aim);
+					AIMUtil.queryAIMImageJsonAnnotations(responseStream, aims, username, sessionID);					
 				}
 				else if ("data".equals(httpRequest.getParameter("format")))
 				{
@@ -1688,16 +1882,16 @@ public class EPADGetHandler
 					throw new Exception("Missing seriesUID in TCIA data transfer request");
 				if (projectID == null || projectID.trim().length() == 0)
 					throw new Exception("Missing projectID in TCIA data transfer request");
-				TCIAService.downloadSeriesFromTCIA(username, seriesUID, projectID);
-				statusCode = HttpServletResponse.SC_OK;
+				//ml get status code from tcia service to see if it was successful
+				statusCode = TCIAService.downloadSeriesFromTCIA(username, seriesUID, projectID);
 
 			} else if (HandlerUtil.matchesTemplate(PluginRouteTemplates.PLUGIN_LIST, pathInfo)) { //ML
-				
+				String processMultipleAims = httpRequest.getParameter("processMultipleAims");
 				EPADPluginList plugins = null;
 				if (returnSummary(httpRequest)) 
-					plugins = pluginOperations.getPluginSummaries(username, sessionID);
+					plugins = pluginOperations.getPluginSummaries(username, sessionID, processMultipleAims);
 				else
-					plugins = pluginOperations.getPluginDescriptions(username, sessionID);
+					plugins = pluginOperations.getPluginDescriptions(username, sessionID, processMultipleAims);
 				
 				responseStream.append(plugins.toJSON());
 				statusCode = HttpServletResponse.SC_OK;
@@ -1736,9 +1930,11 @@ public class EPADGetHandler
 
 			} else if (HandlerUtil.matchesTemplate(ProjectsRouteTemplates.TEMPLATE_LIST, pathInfo)) {
 				ProjectReference reference = ProjectReference.extract(ProjectsRouteTemplates.TEMPLATE_LIST, pathInfo);
-				EPADTemplateContainerList templates = epadOperations.getTemplateDescriptions(reference.projectID, username, sessionID);
+				String templateLevelType = httpRequest.getParameter("templateleveltype");
+				EPADTemplateContainerList templates = epadOperations.getProjectTemplateDescriptions(reference.projectID, username, sessionID, templateLevelType);
+				log.info("template count "+templates.ResultSet.totalRecords);
 				if (templates.ResultSet.totalRecords == 0 && "true".equals(httpRequest.getParameter("includeSystemTemplates"))) {
-					EPADTemplateContainerList systemplates = epadOperations.getSystemTemplateDescriptions(username, sessionID);
+					EPADTemplateContainerList systemplates = epadOperations.getSystemTemplateDescriptions(username, sessionID, templateLevelType);
 					for (EPADTemplateContainer template: systemplates.ResultSet.Result) {
 						templates.addTemplate(template);
 					}
@@ -1747,7 +1943,9 @@ public class EPADGetHandler
 				statusCode = HttpServletResponse.SC_OK;
 
 			} else if (HandlerUtil.matchesTemplate(TemplatesRouteTemplates.TEMPLATE_LIST, pathInfo)) {
-				EPADTemplateContainerList templates = epadOperations.getTemplateDescriptions(username, sessionID);
+				String templateLevelType = httpRequest.getParameter("templateleveltype");
+				boolean includeSystemTemplates = "true".equals(httpRequest.getParameter("includeSystemTemplates"));
+				EPADTemplateContainerList templates = epadOperations.getTemplateDescriptions(username, sessionID, templateLevelType, includeSystemTemplates);
 				responseStream.append(templates.toJSON());
 				statusCode = HttpServletResponse.SC_OK;
 
@@ -1808,6 +2006,14 @@ public class EPADGetHandler
 			return false;
 	}
 
+	private static boolean returnConnected(HttpServletRequest httpRequest)
+	{
+		String format = httpRequest.getParameter("format");
+		if (format != null && format.trim().equalsIgnoreCase("connectedSummary"))
+			return true;
+		else
+			return false;
+	}
 	private static boolean returnFile(HttpServletRequest httpRequest)
 	{
 		String format = httpRequest.getParameter("format");

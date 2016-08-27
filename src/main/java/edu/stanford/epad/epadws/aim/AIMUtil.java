@@ -225,6 +225,21 @@ public class AIMUtil
 	private static final String xsdFileV4 = EPADConfig.xsdFileV4;
 	private static final String xsdFilePathV4 = EPADConfig.xsdFilePathV4;
 
+	public static void updateDSOStartIndex(EPADAIM aim,int dsoStartIndex) {
+		ImageAnnotationCollection iac=null;
+		EpadDatabaseOperations epadDatabaseOperations = EpadDatabase.getInstance().getEPADDatabaseOperations();
+		try {
+			iac = AnnotationGetter.getImageAnnotationCollectionFromString(aim.xml, xsdFilePathV4);
+			iac.getImageAnnotation().setDsoStartIndex(dsoStartIndex);
+			//update the one in db
+			epadDatabaseOperations.updateAIMXml(aim.aimID, iac.getXMLString());
+			//update the one in exist
+			
+			saveImageAnnotationToServer(iac, aim.projectID, dsoStartIndex, null, false);
+		} catch (AimException e) {
+			log.info("Aim exception getting the aim from string " + e.getMessage());
+		}
+	}
 	
 	private static long getTime(String timestamp)
 	{
@@ -266,10 +281,11 @@ public class AIMUtil
 		    String storeXmlPath = baseAnnotationDir + aim.getUniqueIdentifier().getRoot() + ".xml";
 		    File tempFile = new File(tempXmlPath);
 		    File storeFile = new File(storeXmlPath);
+		    String xml = edu.stanford.hakan.aim4api.usage.AnnotationBuilder.convertToString(aim);
+		    log.info("Saving AIM xml="+ xml);
+		    log.info("Saving AIM file with ID " + aim.getUniqueIdentifier() + " to temp folder "+ tempXmlPath);
+			edu.stanford.hakan.aim4api.usage.AnnotationBuilder.saveToFile(aim, tempXmlPath, xsdFilePathV4);
 		    
-		    edu.stanford.hakan.aim4api.usage.AnnotationBuilder.saveToFile(aim, tempXmlPath, xsdFilePathV4);
-		    log.info("Saving AIM file with ID " + aim.getUniqueIdentifier());
-		
 		    log.info(AnnotationBuilder.getAimXMLsaveResult());
 		    if (storeFile.exists()) {
 		        storeFile.delete();
@@ -308,7 +324,7 @@ public class AIMUtil
 		            }
 		        }
 		
-		        if (templateHasBeenFound && jsessionID != null) {
+		        if (templateHasBeenFound && jsessionID != null && invokePlugin) {
 		        	// Start plugin task
 					log.info("Starting Plugin task for:" + pluginName);
 					(new Thread(new PluginStartTask(jsessionID, pluginName, aim.getUniqueIdentifier().getRoot(), frameNumber, projectID))).start();				
@@ -452,7 +468,12 @@ public class AIMUtil
 			log.info("DSO Image UID=" + imageUID);
 			log.info("Referenced SOP Instance UID=" + referencedImageUID[0]);
 			log.info("Referenced Series Instance UID=" + referencedSeriesUID);
-
+			
+	
+			
+			DCM4CHEEImageDescription id=dcm4CheeDatabaseOperations.getImageDescription(referencedStudyUID, referencedSeriesUID, referencedImageUID[0]);
+			log.info("class uid from image description" + id.classUID);
+			
 			String name = aimName;
 			if (name == null || name.trim().length() == 0) name = description;
 			if (name == null || name.trim().length() == 0) name = "segmentation";
@@ -462,13 +483,14 @@ public class AIMUtil
 			SegmentationCollection sc = new SegmentationCollection();
 			sc.AddSegmentation(new Segmentation(0, imageUID, sopClassUID, referencedImageUID[0], 1));
 			imageAnnotation.setSegmentationCollection(sc);
-
+			//ml adding sop class to createdicomimage references below
 			DICOMImageReference originalDICOMImageReference = PluginAIMUtil.createDICOMImageReferenceV3Compability(referencedStudyUID,
-					referencedSeriesUID, referencedImageUID[0]);
+					referencedSeriesUID, referencedImageUID[0], id.classUID);
 			imageAnnotation.addImageReference(originalDICOMImageReference);
-			DICOMImageReference dsoDICOMImageReference = PluginAIMUtil.createDICOMImageReferenceV3Compability(studyUID, seriesUID,
-					imageUID);
-			imageAnnotation.addImageReference(dsoDICOMImageReference);
+			//ml 2. image reference removed
+//			DICOMImageReference dsoDICOMImageReference = PluginAIMUtil.createDICOMImageReferenceV3Compability(studyUID, seriesUID,
+//					imageUID, sopClassUID);
+//			imageAnnotation.addImageReference(dsoDICOMImageReference);
 
 			Person person = new Person();
 			person.setSex(patientSex.trim());
@@ -789,24 +811,34 @@ public class AIMUtil
 				}
 				if (ea != null)
 				{
-					log.debug("ea.seriesUID:" + ea.seriesUID + " seriesID:" +  seriesID);
-					if (!ea.seriesUID.equals(seriesID) && (seriesIds.size() == 1 || !ea.seriesUID.equals(seriesIds.get(1))))
-					{
-						String message = "Invalid SeriesUID in AIM xml, AimID:" + ea.aimID + " Incorrect seriesUID in AIM:" + seriesID + " Should be:" + ea.seriesUID;
-						log.warning(message);
-						String xml = edu.stanford.hakan.aim4api.usage.AnnotationBuilder.convertToString(imageAnnotationColl);
-						log.info("DSO aim:" + xml);
-						epadDatabaseOperations.deleteAIM("admin", ea.aimID);
-//							throw new Exception(message);
-						imageID = ea.imageUID;
-						seriesID = ea.seriesUID;
-						return false;
+					log.info("frame num:"+ea.dsoFrameNo);
+					if (ea.dsoFrameNo!=0) {//there is a frame number in db use that!
+						log.info("setting the xml with existing frameno "+ea.dsoFrameNo + " aim: "+ imageAnnotationColl.getXMLString());
+						imageAnnotationColl.getImageAnnotation().setDsoStartIndex(ea.dsoFrameNo);
+						
 					}
-					if (seriesIds.size() > 1 && ea.seriesUID.equals(seriesIds.get(1)))
-					{
-						seriesID = seriesIds.get(1); // How weird, the actual series is second
-						dsoSeriesUID = seriesIds.get(0);
-						log.info("Source SeriesUID:" + seriesID + " dsoSeriesUID:" +  dsoSeriesUID);
+					if (ea.seriesUID==null) {
+						log.warning("no series in aim. skipping check");
+					}else {
+						log.debug("ea.seriesUID:" + ea.seriesUID + " seriesID:" +  seriesID);
+						if (ea.seriesUID!=null && !ea.seriesUID.equals(seriesID) && (seriesIds.size() == 1 || !ea.seriesUID.equals(seriesIds.get(1))))
+						{
+							String message = "Invalid SeriesUID in AIM xml, AimID:" + ea.aimID + " Incorrect seriesUID in AIM:" + seriesID + " Should be:" + ea.seriesUID;
+							log.warning(message);
+							String xml = edu.stanford.hakan.aim4api.usage.AnnotationBuilder.convertToString(imageAnnotationColl);
+							log.info("DSO aim:" + xml);
+							epadDatabaseOperations.deleteAIM("admin", ea.aimID);
+	//							throw new Exception(message);
+							imageID = ea.imageUID;
+							seriesID = ea.seriesUID;
+							return false;
+						}
+						if (seriesIds.size() > 1 && ea.seriesUID!=null && ea.seriesUID.equals(seriesIds.get(1)))
+						{
+							seriesID = seriesIds.get(1); // How weird, the actual series is second
+							dsoSeriesUID = seriesIds.get(0);
+							log.info("Source SeriesUID:" + seriesID + " dsoSeriesUID:" +  dsoSeriesUID);
+						}
 					}
 				}
 				log.info("Saving AIM file with ID " + imageAnnotationColl.getUniqueIdentifier() + " projectID:" + projectID + " seriesUID:" + seriesID + " username:" + username);
@@ -828,7 +860,16 @@ public class AIMUtil
 								log.info("DSO RSUID:" + dse.getReferencedSopInstanceUid().getRoot() + " SUID:" + dse.getSopInstanceUid().getRoot());
 								SeriesReference seriesReference = new SeriesReference(projectID, null, null, ea.seriesUID);
 								List<EPADAIM> aims = epadDatabaseOperations.getAIMs(seriesReference);
-								if (eaim != null && eaim.dsoSeriesUID == null && aims.size() > 1 && seriesIds.size() > 1) {
+								//ml aim for no imageref for dso
+								if (dse!=null && seriesIds.size()==1) {
+									final Dcm4CheeDatabaseOperations dcm4CheeDatabaseOperations = Dcm4CheeDatabase.getInstance()
+											.getDcm4CheeDatabaseOperations();
+									dsoSeriesUID=dcm4CheeDatabaseOperations.getSeriesUIDForImage(dse.getSopInstanceUid().getRoot());
+								}
+//								updateDSOStartIndex(eaim, e.ds);
+								//if (eaim != null && eaim.dsoSeriesUID == null && aims.size() > 1 && seriesIds.size() > 1) {
+								//ml 
+								if (eaim != null && eaim.dsoSeriesUID == null && aims.size() > 1 && !dsoSeriesUID.equals("")) {
 									for (EPADAIM e: aims)
 									{
 										log.info("Checking, aimID:" + e.aimID + " dsoSeries:" + e.dsoSeriesUID + " this:" + dsoSeriesUID);
@@ -901,6 +942,7 @@ public class AIMUtil
 		queryAIMImageAnnotationsV4(responseStream, projectID, aimSearchType, searchValue, user);
 	}
 
+	//ml aimv3 is not used anymore
 	public static EPADAIMList queryAIMImageAnnotationSummaries(EPADAIMList aims, String user, int index, int count, String sessionID) throws ParserConfigurationException, AimException
 	{
 		Map<String, String> projectAimIDs = getUIDCsvList(sessionID, aims, user);
@@ -1055,6 +1097,129 @@ public class AIMUtil
 		log.info("" + aims.size() + " annotations returned to client, time to write resp:" + (resptime-xmltime) + " msecs");
 	}
 	
+	public static EPADAIMList filterPermittedImageAnnotations(EPADAIMList aims, String user, String sessionID) throws ParserConfigurationException, AimException
+	{
+		long starttime = System.currentTimeMillis();
+		EPADAIMList aimsFromExist = new EPADAIMList();
+		EPADAIMList aimsFromDB = new EPADAIMList();
+		for (EPADAIM ea: aims.ResultSet.Result)
+		{
+			if (ea.xml == null || ea.xml.equals(""))
+			{
+				aimsFromExist.addAIM(ea);
+			}
+			else
+			{
+				aimsFromDB.addAIM(ea);
+			}
+		}
+		log.info("aimd from db:"+aimsFromDB.ResultSet.totalRecords);
+		List<EPADAIM> aimsDB = new ArrayList<EPADAIM>();
+		if (aimsFromDB.ResultSet.totalRecords > 0)
+		{
+			// Check permissions for aims from DB table
+			Map<String, List<EPADAIM>> aimsMap = getPermittedAIMs(sessionID, aimsFromDB, user);
+			long permtime = System.currentTimeMillis();
+			for (List<EPADAIM> paims: aimsMap.values())
+			{
+				aimsDB.addAll(paims);
+			}
+			// Get other params
+			for (int i = 0; i < aimsDB.size(); i++)
+			{
+				EPADAIM ea = aimsDB.get(i);
+				try {
+					List<ImageAnnotationCollection> iacs = edu.stanford.hakan.aim4api.usage.AnnotationGetter.getImageAnnotationCollectionsFromString(ea.xml, null);
+					ImageAnnotationCollection aim = iacs.get(0);
+					Aim4 a = new Aim4(aim);
+					ea.name = aim.getImageAnnotations().get(0).getName().getValue();
+					//ea.template = aim.getImageAnnotations().get(0).getListTypeCode().get(0).getCodeSystem();// .getCode();
+					//ml
+					ea.template = aim.getImageAnnotations().get(0).getListTypeCode().get(0).getCode();
+					ea.templateType = aim.getImageAnnotations().get(0).getListTypeCode().get(0).getCodeSystemName();
+					ea.date = aim.getDateTime();
+					ea.comment = a.getComment();
+					if (a.getFirstStudyDate() != null)
+						ea.studyDate = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(a.getFirstStudyDate());
+					ea.patientName = a.getPatientName();
+					ea.xml = aim.getXMLString(); //the only different thing from summaries!!! very bad solution!!
+				} catch (edu.stanford.hakan.aim4api.base.AimException e) {
+					log.warning("Invalid AIM xml in DB, aimID:" + ea.aimID, e);
+					aimsDB.remove(i--);
+					aimsFromExist.addAIM(ea);
+				}
+			}
+		}
+		long dbtime = System.currentTimeMillis();
+		
+		List<ImageAnnotationCollection> annotations = new ArrayList<ImageAnnotationCollection>();
+		if (aimsFromExist.ResultSet.totalRecords > 0)
+		{
+			// Check permission for aims from Exist
+			Map<String, String> projectAimIDs = getUIDCsvList(sessionID, aimsFromExist, user);
+			for (String projectID: projectAimIDs.keySet())
+			{
+				String uids = projectAimIDs.get(projectID);
+				if (uids.trim().length() > 0)
+				{
+					List<ImageAnnotationCollection> iacs = AIMQueries.getAIMImageAnnotationsV4(projectID, AIMSearchType.ANNOTATION_UID, uids, user);
+					annotations.addAll(iacs);
+					if (iacs.size() == 0)
+						log.warning("Annotations not found in Exist for uids:" + uids);
+					log.info("" + iacs.size() + " AIM4 file(s) found for project:" + projectID +" for user " + user);
+				
+				}
+			}
+		}
+		long existtime = System.currentTimeMillis();
+
+		Map<String, EPADAIM> aimMAP = new HashMap<String, EPADAIM>();
+		EPADAIMResultSet rs = aims.ResultSet;
+		for (EPADAIM aim: rs.Result)
+		{
+			aimMAP.put(aim.aimID, aim);
+		}
+		aims = new EPADAIMList();
+		for (ImageAnnotationCollection aim : annotations) {
+			try {
+				Aim4 a = new Aim4(aim);
+				EPADAIM ea = aimMAP.get(aim.getUniqueIdentifier());
+				if (ea == null)  continue;
+				if (aim.getImageAnnotations().get(0).getName() != null)
+				{
+					ea.name = aim.getImageAnnotations().get(0).getName().getValue();
+				}
+				if (aim.getImageAnnotations().get(0).getListTypeCode() != null && aim.getImageAnnotations().get(0).getListTypeCode().size() > 0)
+				{
+					//ml what is this?
+					//it is like this just above 
+//					ea.template = aim.getImageAnnotations().get(0).getListTypeCode().get(0).getDisplayName().getValue();
+//					ea.templateType = aim.getImageAnnotations().get(0).getListTypeCode().get(0).getCode();
+					//ml
+					ea.template = aim.getImageAnnotations().get(0).getListTypeCode().get(0).getCode();
+					ea.templateType = aim.getImageAnnotations().get(0).getListTypeCode().get(0).getCodeSystemName();
+				}
+				ea.date = aim.getDateTime();
+				ea.comment = a.getComment();
+				if (a.getFirstStudyDate() != null)
+					ea.studyDate = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss").format(a.getFirstStudyDate());
+				ea.patientName = a.getPatientName();
+				ea.xml = aim.getXMLString(); //the only different thing from summaries!!! very bad solution!!
+				aims.addAIM(ea);
+			} catch (Exception x) {
+				log.warning("Error parsing annotation:" + aim, x);
+				x.printStackTrace();
+			}
+		}
+		aims.ResultSet.Result.addAll(aimsDB);
+		aims.ResultSet.totalRecords = aims.ResultSet.Result.size();
+		long endtime = System.currentTimeMillis();
+		log.info("" + aims.ResultSet.totalRecords + " annotation summaries returned to client, took:" + (endtime-starttime) 
+				+ " msecs, db time:" + (dbtime-starttime) + " exist time:" + (existtime-dbtime)
+				+ " iac to summaries:" + (existtime-endtime));
+		return aims;
+	}
+	
 	public static EPADAIMList queryAIMImageAnnotationSummariesV4(EPADAIMList aims, String user, String sessionID) throws ParserConfigurationException, AimException
 	{
 		long starttime = System.currentTimeMillis();
@@ -1091,8 +1256,10 @@ public class AIMUtil
 					ImageAnnotationCollection aim = iacs.get(0);
 					Aim4 a = new Aim4(aim);
 					ea.name = aim.getImageAnnotations().get(0).getName().getValue();
-					ea.template = aim.getImageAnnotations().get(0).getListTypeCode().get(0).getCodeSystem();// .getCode();
-					ea.templateType = aim.getImageAnnotations().get(0).getListTypeCode().get(0).getCode();
+					//ea.template = aim.getImageAnnotations().get(0).getListTypeCode().get(0).getCodeSystem();// .getCode();
+					//ml
+					ea.template = aim.getImageAnnotations().get(0).getListTypeCode().get(0).getCode();
+					ea.templateType = aim.getImageAnnotations().get(0).getListTypeCode().get(0).getCodeSystemName();
 					ea.date = aim.getDateTime();
 					ea.comment = a.getComment();
 					if (a.getFirstStudyDate() != null)
@@ -1147,8 +1314,13 @@ public class AIMUtil
 				}
 				if (aim.getImageAnnotations().get(0).getListTypeCode() != null && aim.getImageAnnotations().get(0).getListTypeCode().size() > 0)
 				{
+					//ml what is this?
+					//it is like this just above 
+//					ea.template = aim.getImageAnnotations().get(0).getListTypeCode().get(0).getDisplayName().getValue();
+//					ea.templateType = aim.getImageAnnotations().get(0).getListTypeCode().get(0).getCode();
+					//ml
 					ea.template = aim.getImageAnnotations().get(0).getListTypeCode().get(0).getCode();
-					ea.templateType = aim.getImageAnnotations().get(0).getListTypeCode().get(0).getCodeSystem();
+					ea.templateType = aim.getImageAnnotations().get(0).getListTypeCode().get(0).getCodeSystemName();
 				}
 				ea.date = aim.getDateTime();
 				ea.comment = a.getComment();
@@ -1194,8 +1366,9 @@ public class AIMUtil
 						EPADAIM ea = paimsMap.get(iac.getUniqueIdentifier().getRoot());
 						Aim4 a = new Aim4(iac);
 						ea.name = iac.getImageAnnotations().get(0).getName().getValue();
-						ea.template = iac.getImageAnnotations().get(0).getListTypeCode().get(0).getCodeSystem();// .getCode();
-						ea.templateType = iac.getImageAnnotations().get(0).getListTypeCode().get(0).getCode();
+						//ml
+						ea.template = iac.getImageAnnotations().get(0).getListTypeCode().get(0).getCode();
+						ea.templateType = iac.getImageAnnotations().get(0).getListTypeCode().get(0).getCodeSystemName();
 						ea.date = iac.getDateTime();
 						ea.comment = a.getComment();
 						if (a.getFirstStudyDate() != null)
@@ -1233,7 +1406,9 @@ public class AIMUtil
 						EPADAIM ea = paimsMap.get(aimID);
 						//log.debug("Json ImageAnnotation:" + imageCollection.getAsJsonObject("imageAnnotations").getAsJsonObject("ImageAnnotation"));
 						ea.name = imageCollection.getAsJsonObject("imageAnnotations").getAsJsonObject("ImageAnnotation").getAsJsonObject("name").getAsJsonPrimitive("value").getAsString();
-						ea.template = imageCollection.getAsJsonObject("imageAnnotations").getAsJsonObject("ImageAnnotation").getAsJsonObject("typeCode").getAsJsonPrimitive("codeSystem").getAsString();
+						//ml
+						ea.template = imageCollection.getAsJsonObject("imageAnnotations").getAsJsonObject("ImageAnnotation").getAsJsonObject("typeCode").getAsJsonPrimitive("code").getAsString();
+						ea.templateType = imageCollection.getAsJsonObject("imageAnnotations").getAsJsonObject("ImageAnnotation").getAsJsonObject("typeCode").getAsJsonPrimitive("codeSystemName").getAsString();
 						ea.date = imageCollection.getAsJsonObject("dateTime").getAsJsonPrimitive("value").getAsString();
 						ea.comment = imageCollection.getAsJsonObject("imageAnnotations").getAsJsonObject("ImageAnnotation").getAsJsonObject("comment").getAsJsonPrimitive("value").getAsString();
 						ea.studyDate = ((JsonObject)imageCollection.getAsJsonObject("imageAnnotations").getAsJsonObject("ImageAnnotation")
@@ -1351,8 +1526,9 @@ public class AIMUtil
 				EPADAIM ea = new EPADAIM(iac.getUniqueIdentifier().getRoot(), aim.userName, 
 						aim.projectID, aim.subjectID, aim.studyUID, aim.seriesUID, aim.imageUID, aim.instanceOrFrameNumber);
 				ea.name = iac.getImageAnnotations().get(0).getName().getValue();
-				ea.template = iac.getImageAnnotations().get(0).getListTypeCode().get(0).getCodeSystem();// .getCode();
-				ea.templateType = iac.getImageAnnotations().get(0).getListTypeCode().get(0).getCode();
+				//ml
+				ea.template = iac.getImageAnnotations().get(0).getListTypeCode().get(0).getCode();
+				ea.templateType = iac.getImageAnnotations().get(0).getListTypeCode().get(0).getCodeSystemName();
 				ea.date = iac.getDateTime();
 				ea.comment = a.getComment();
 				if (a.getFirstStudyDate() != null)
@@ -1381,8 +1557,9 @@ public class AIMUtil
 				EPADAIM ea = new EPADAIM(iac.getUniqueIdentifier().getRoot(), aim.userName, 
 						aim.projectID, aim.subjectID, aim.studyUID, aim.seriesUID, aim.imageUID, aim.instanceOrFrameNumber);
 				ea.name = iac.getImageAnnotations().get(0).getName().getValue();
-				ea.template = iac.getImageAnnotations().get(0).getListTypeCode().get(0).getCodeSystem();// .getCode();
-				ea.templateType = iac.getImageAnnotations().get(0).getListTypeCode().get(0).getCode();
+				//ml
+				ea.template = iac.getImageAnnotations().get(0).getListTypeCode().get(0).getCode();
+				ea.templateType = iac.getImageAnnotations().get(0).getListTypeCode().get(0).getCodeSystemName();
 				ea.date = iac.getDateTime();
 				ea.comment = a.getComment();
 				if (a.getFirstStudyDate() != null)
@@ -1411,8 +1588,9 @@ public class AIMUtil
 				EPADAIM ea = new EPADAIM(iac.getUniqueIdentifier().getRoot(), aim.userName, 
 						aim.projectID, aim.subjectID, aim.studyUID, aim.seriesUID, aim.imageUID, aim.instanceOrFrameNumber);
 				ea.name = iac.getImageAnnotations().get(0).getName().getValue();
-				ea.template = iac.getImageAnnotations().get(0).getListTypeCode().get(0).getCodeSystem();// .getCode();
-				ea.templateType = iac.getImageAnnotations().get(0).getListTypeCode().get(0).getCode();
+				//ml
+				ea.template = iac.getImageAnnotations().get(0).getListTypeCode().get(0).getCode();
+				ea.templateType = iac.getImageAnnotations().get(0).getListTypeCode().get(0).getCodeSystemName();
 				ea.date = iac.getDateTime();
 				ea.comment = a.getComment();
 				if (a.getFirstStudyDate() != null)
@@ -1486,8 +1664,9 @@ public class AIMUtil
 				Aim4 a = new Aim4(iac);
 				EPADAIM ea = new EPADAIM(iac.getUniqueIdentifier().getRoot(), a.getLoggedInUser().getLoginName(), "", a.getPatientID(), a.getFirstStudyID(), a.getFirstSeriesID(), a.getFirstImageID(), 0);
 				ea.name = iac.getImageAnnotations().get(0).getName().getValue();
-				ea.template = iac.getImageAnnotations().get(0).getListTypeCode().get(0).getCodeSystem();// .getCode();
-				ea.templateType = iac.getImageAnnotations().get(0).getListTypeCode().get(0).getCode();
+				//ml
+				ea.template = iac.getImageAnnotations().get(0).getListTypeCode().get(0).getCode();
+				ea.templateType = iac.getImageAnnotations().get(0).getListTypeCode().get(0).getCodeSystemName();
 				ea.date = iac.getDateTime();
 				ea.comment = a.getComment();
 				if (a.getFirstStudyDate() != null)
@@ -1609,34 +1788,49 @@ public class AIMUtil
 		}
     }
     
-	public static String runPlugIn(String[] aimIDs, String templateName, String projectID, String jsessionID) throws Exception
+    public static String runPlugIn(String[] aimIDs, String templateName, String projectID, String jsessionID) throws Exception
+	{                        
+		return runPlugIn(aimIDs, templateName, projectID, jsessionID,true);
+	}
+    
+	public static String runPlugIn(String[] aimIDs, String templateName, String projectID, String jsessionID, boolean inParallel) throws Exception
 	{                        
 		String result = "";
-		for (String aimID:  aimIDs)
-		{
-			if (isPluginStillRunning(aimID))
-			{
-				result = result + "\n" + "Previous version of this AIM " + aimID + " is still being processed by the plugin";
-				continue;
-			}
-			boolean templateHasBeenFound = false;
-			String handlerName = null;
-			String pluginName = null;
+		
+		//ml moved out of for. look once
+		boolean templateHasBeenFound = false;
+		String handlerName = null;
+		String pluginName = null;
 
-			List<String> list = PluginConfig.getInstance().getPluginTemplateList();
-			for (int i = 0; i < list.size(); i++) {
-				String templateNameFounded = list.get(i);
-				if (templateNameFounded.equals(templateName)) {
-					handlerName = PluginConfig.getInstance().getPluginHandlerList().get(i);
-					pluginName = PluginConfig.getInstance().getPluginNameList().get(i);
-					templateHasBeenFound = true;
+		List<String> list = PluginConfig.getInstance().getPluginTemplateList();
+		log.info("plugin count: "+ list.size());
+		for (int i = 0; i < list.size(); i++) {
+			String templateNameFounded = list.get(i);
+			log.info("found plugin: " + templateNameFounded + " name:" + PluginConfig.getInstance().getPluginNameList().get(i));
+			if (templateNameFounded.equals(templateName)) {
+				handlerName = PluginConfig.getInstance().getPluginHandlerList().get(i);
+				pluginName = PluginConfig.getInstance().getPluginNameList().get(i);
+				templateHasBeenFound = true;
+			}
+		}
+		
+		if (inParallel) { 
+			for (String aimID:  aimIDs)
+			{
+				if (isPluginStillRunning(aimID))
+				{
+					result = result + "\n" + "Previous version of this AIM " + aimID + " is still being processed by the plugin";
+					continue;
+				}
+				
+	
+				if (templateHasBeenFound && jsessionID != null) {
+					log.info("Starting Plugin task for:" + pluginName);
+					(new Thread(new PluginStartTask(jsessionID, pluginName, aimID, 0, projectID))).start();				
 				}
 			}
-
-			if (templateHasBeenFound) {
-				log.info("Starting Plugin task for:" + pluginName);
-				(new Thread(new PluginStartTask(jsessionID, pluginName, aimID, 0, projectID))).start();				
-			}
+		} else { //send all aims at once
+			(new Thread(new PluginStartTask(jsessionID, pluginName, aimIDs, 0, projectID))).start();	
 		}
 		return result;
 	}
@@ -2200,8 +2394,9 @@ public class AIMUtil
 				}
 				if (aim.getImageAnnotations().get(0).getListTypeCode() != null && aim.getImageAnnotations().get(0).getListTypeCode().size() > 0)
 				{
+					//ml
 					ea.template = aim.getImageAnnotations().get(0).getListTypeCode().get(0).getCode();
-					ea.templateType = aim.getImageAnnotations().get(0).getListTypeCode().get(0).getCodeSystem();
+					ea.templateType = aim.getImageAnnotations().get(0).getListTypeCode().get(0).getCodeSystemName();
 				}
 				ea.date = aim.getDateTime();
 				ea.comment = a.getComment();

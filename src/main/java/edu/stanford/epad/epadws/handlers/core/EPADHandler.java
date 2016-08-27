@@ -154,10 +154,13 @@ public class EPADHandler extends AbstractHandler
 			String method = httpRequest.getMethod();
 
 			String sessionID = SessionService.getJSessionIDFromRequest(httpRequest);
+			log.info("request  "+ sessionID);
 			boolean releaseSession = false;
 			if (sessionID == null)
 			{
 				sessionID = SessionService.getJSessionIDFromRequest(httpRequest, true);
+				log.info("createli request  "+ sessionID);
+				
 				releaseSession = true;
 			}
 			String username = httpRequest.getParameter("username");
@@ -203,11 +206,11 @@ public class EPADHandler extends AbstractHandler
 			log.info("ID:" + Thread.currentThread().getId() + " Error message to client:" + e.getMessage());
 		}
 		log.info("ID:" + Thread.currentThread().getId() + " Status returned to client:" + statusCode);
-//		String origin = httpRequest.getHeader("Origin");
-//		httpResponse.setHeader("Access-Control-Allow-Origin", origin);
-//		httpResponse.setHeader("Access-Control-Allow-Credentials", "true");
-//		httpResponse.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
-//		httpResponse.setHeader("Access-Control-Allow-Methods", "POST, DELETE, PUT, GET, OPTIONS");
+		String origin = httpRequest.getHeader("Origin");
+		httpResponse.setHeader("Access-Control-Allow-Origin", origin);
+		httpResponse.setHeader("Access-Control-Allow-Credentials", "true");
+		httpResponse.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
+		httpResponse.setHeader("Access-Control-Allow-Methods", "POST, DELETE, PUT, GET, OPTIONS");
 		httpResponse.setStatus(statusCode);
 	}
 }

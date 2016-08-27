@@ -133,6 +133,7 @@ public class StudyDataDeleteTask implements Runnable
 	private final String patientID;
 	private final String studyUID;
 	private final boolean deleteAims;
+	private final boolean all;
 	
 	private static final EpadProjectOperations projectOperations = DefaultEpadProjectOperations.getInstance();	
 	
@@ -143,6 +144,18 @@ public class StudyDataDeleteTask implements Runnable
 		this.patientID = patientID;
 		this.studyUID = studyUID;
 		this.deleteAims = deleteAims;
+		this.all=false;
+		
+	}
+
+	public StudyDataDeleteTask(String username, String projectID, String patientID, String studyUID, boolean deleteAims, boolean all)
+	{
+		this.username = username;
+		this.projectID = projectID;
+		this.patientID = patientID;
+		this.studyUID = studyUID;
+		this.deleteAims = deleteAims;
+		this.all=all;
 	}
 
 	@Override
@@ -168,9 +181,10 @@ public class StudyDataDeleteTask implements Runnable
     				break;
     			}
     		}
-			if (deleteCompletely)
+    		//TODO when we implement deleting old files setting remove deletecompletely when not used by other
+			if (deleteCompletely || all)
 			{
-				if (deleteInUnassigned)
+				if (deleteInUnassigned || all)
 				{
 					List<NonDicomSeries> ndSerieses = projectOperations.getNonDicomSeriesForStudy(studyUID);
 					for (NonDicomSeries series: ndSerieses)
@@ -184,12 +198,14 @@ public class StudyDataDeleteTask implements Runnable
 			}
 			else
 			{
-				String msg = "Study " + studyUID + " in use by other projects or subjects so will not be deleted from DCM4CHEE";
-				log.info(msg);
-				EpadDatabase.getInstance().getEPADDatabaseOperations().insertEpadEvent(
-						username, 
-						"Study Not Deleted", 
-						"", "", patientID, "", "", "", msg, projectID,"",studyUID,"", false);					
+				//the user chose to select from project we do not need that anymore. 
+				//should we tell user when we are also deleting from system?
+//				String msg = "Study " + studyUID + " in use by other projects or subjects so will not be deleted from DCM4CHEE";
+//				log.info(msg);
+//				EpadDatabase.getInstance().getEPADDatabaseOperations().insertEpadEvent(
+//						username, 
+//						"Study Not Deleted", 
+//						"", "", patientID, "", "", "", msg, projectID,"",studyUID,"", false);					
 
 			}
 		} catch (Exception e) {

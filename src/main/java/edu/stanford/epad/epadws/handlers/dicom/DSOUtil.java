@@ -258,10 +258,16 @@ public class DSOUtil
 					log.info("DSO to be edited, tag:" + dicomElement.tagName + " value:" + dicomElement.value);
 					seriesDescription = dicomElement.value;
 				}
+				
 			}
 			// Always 'clobber' the orginal DSO
 //			if (seriesDescription != null && seriesDescription.toLowerCase().contains("epad"))
 			{
+				//check if the image reference series is *
+				if (imageReference.seriesUID.equals("*")) {
+					log.info("why still * " + dsoEditRequest.toJSON() );
+				}
+				
 				seriesUID = imageReference.seriesUID;
 				instanceUID = imageReference.imageUID;
 			}
@@ -300,10 +306,11 @@ public class DSOUtil
 					return null;
 				}
 			}
-
 			if (DSOUtil.createDSO(imageReference, dsoTIFFMaskFiles, dicomFilePaths, seriesDescription, seriesUID, instanceUID))
 			{
-				log.info("Finished generating DSO");
+				Integer firstFrame=TIFFMasksToDSOConverter.firstFrames.get(instanceUID);
+				TIFFMasksToDSOConverter.firstFrames.remove(instanceUID);
+				log.info("Finished generating DSO. First frame is:"+firstFrame);
 				for (File file: dsoTIFFMaskFiles)
 				{
 					deleteQuietly(file);
@@ -313,7 +320,7 @@ public class DSOUtil
 					deleteQuietly(new File(dicom));
 				}
 				return new DSOEditResult(imageReference.projectID, imageReference.subjectID, imageReference.studyUID,			
-						imageReference.seriesUID, imageReference.imageUID, dsoEditRequest.aimID);
+						imageReference.seriesUID, imageReference.imageUID, dsoEditRequest.aimID, firstFrame);
 			}
 			else
 				return null;
@@ -520,7 +527,7 @@ public class DSOUtil
 			boolean removeEmptyMasks = false;
 			if ("true".equals(EPADConfig.getParamValue("OptimizedDSOs", "true")))
 				removeEmptyMasks = true;
-			String[] seriesImageUids = converter.generateDSO(files2FilePaths(tiffMaskFiles), dicomFilePaths, temporaryDSOFile.getAbsolutePath(), dsoSeriesDescription, dsoSeriesUID, dsoInstanceUID, removeEmptyMasks);
+			String[] seriesImageUids = converter.generateDSO(files2FilePaths(tiffMaskFiles), dicomFilePaths, temporaryDSOFile.getAbsolutePath(), dsoSeriesDescription, dsoSeriesUID, dsoInstanceUID, removeEmptyMasks, "binary");
 			imageReference.seriesUID = seriesImageUids[0];
 			imageReference.imageUID = seriesImageUids[1];
 			log.info("Sending generated DSO " + temporaryDSOFile.getAbsolutePath() + " imageUID:" + imageReference.imageUID + " to dcm4chee...");
@@ -699,6 +706,8 @@ public class DSOUtil
 			//Attribute a = new UnsignedShortAttribute(t);
 
 			int nonblankFrame = 0;
+			String nonBlankImageUID="";
+					
 			List<DICOMElement> referencedSOPInstanceUIDDICOMElements = getDICOMElementsByCode(dicomElementList,
 					PixelMedUtils.ReferencedSOPInstanceUIDCode);
 			String[] segNums = SequenceAttribute.getArrayOfSingleStringValueOrEmptyStringOfNamedAttributeWithinSequenceItems(dsoDICOMAttributes, TagFromName.SegmentSequence, TagFromName.SegmentNumber);
@@ -745,6 +754,7 @@ public class DSOUtil
 				List<DCM4CHEEImageDescription> referencedImages = new ArrayList<DCM4CHEEImageDescription>();
 				List<DCM4CHEEImageDescription> imageDescriptions = dcm4CheeDatabaseOperations.getImageDescriptions(
 						studyUID, referencedSeriesUID);
+				//starting offset of instances (for series that doesn't start from 1)
 				int instanceOffset = imageDescriptions.size();
 				Map<String, DCM4CHEEImageDescription> descMap = new HashMap<String, DCM4CHEEImageDescription>();
 				for (DCM4CHEEImageDescription imageDescription : imageDescriptions) {
@@ -794,12 +804,22 @@ public class DSOUtil
 					projectOperations.updateUserTaskStatus(username, TaskStatus.TASK_DSO_PNG_GEN, seriesUID, "Generating PNGs, frame:" + frameNumber, null, null);
 					String pngMaskFilePath = pngMaskDirectoryPath + refFrameNumber + ".png";
 					try {
+						log.info("buffered image ");
 						BufferedImage bufferedImage = sourceDSOImage.getBufferedImage(frameNumber);
+						log.info("buffered image "+ bufferedImage.toString());
+						
 						BufferedImage bufferedImageWithTransparency = generateTransparentImage(bufferedImage);
-						if (nonBlank.get())
+						log.info(" bufferedImageWithTransparency "+ bufferedImageWithTransparency.toString());
+						
+						if (nonBlank.get()) {
 							nonblankFrame = refFrameNumber;
-		
+							nonBlankImageUID = dcm4cheeReferencedImageDescription.imageUID;
+						}
+						log.info(" nonblankFrame "+ nonblankFrame);
+						
 						File pngMaskFile = new File(pngMaskFilePath);
+						log.info(" pngMaskFile "+ pngMaskFile.getAbsolutePath());
+						
 						insertEpadFile(databaseOperations, pngMaskFilePath, pngMaskFile.length(), imageUID);
 						log.info("Writing PNG mask file frame " + frameNumber + " of " + numberOfFrames + " for DSO " + imageUID + " in series " + seriesUID + " file:" + pngMaskFilePath + " nonBlank:" + nonBlank.get());
 						ImageIO.write(bufferedImageWithTransparency, "png", pngMaskFile);
@@ -857,8 +877,10 @@ public class DSOUtil
 					int frameNumber = instanceNumber - 1;
 					BufferedImage bufferedImage = sourceDSOImage.getBufferedImage(i);
 					BufferedImage bufferedImageWithTransparency = generateTransparentImage(bufferedImage);
-					if (nonBlank.get())
+					if (nonBlank.get()) {
 						nonblankFrame = frameNumber;
+						nonBlankImageUID = dcm4cheeReferencedImageDescription.imageUID;
+					}
 					String pngMaskFilePath = pngMaskDirectoryPath + frameNumber  + "_"  + segmentNumbers[i] + ".png";
 					
 					File pngMaskFile = new File(pngMaskFilePath);
@@ -880,6 +902,7 @@ public class DSOUtil
 			for (EPADAIM aim: aims)
 			{
 				epadDatabaseOperations.updateAIMDSOFrameNo(aim.aimID, nonblankFrame);
+				AIMUtil.updateDSOStartIndex(aim, nonblankFrame);
 			}
 			log.info("... finished writing PNG " + numberOfFrames + " masks for DSO image " + imageUID + " in series " + seriesUID + " nonBlankFrame:" + nonblankFrame);
 		} catch (DicomException e) {
@@ -928,6 +951,14 @@ public class DSOUtil
 
 		log.info("Received DSO edit request for series " + seriesUID);
 		String confirm = dcm4CheeDatabaseOperations.getSeriesUIDForImage(imageUID);
+		//ml if ui do not know series uid (new dso)
+		if (seriesUID.equals("*")) {
+			seriesUID=confirm;
+		}
+		//ml if ui do not know study uid (new dso)
+		if (studyUID.equals("*")) {
+			studyUID=dcm4CheeDatabaseOperations.getStudyUIDForSeries(seriesUID);
+		}
 		if (!confirm.equals(seriesUID))
 		{
 			log.warning("Invalid ImageUID for series:" + seriesUID);
@@ -942,6 +973,13 @@ public class DSOUtil
 			if (editedFrameNumbers == null || editedFrameNumbers.length() == 0)
 			{
 				dsoEditRequest = extractDSOEditRequest(fileItemIterator);
+				//ui doesn't send editedFrameNumbers, but the series uid is *
+				if (dsoEditRequest.seriesUID.equals("*")) {
+					dsoEditRequest.seriesUID=confirm;
+				}
+				if (dsoEditRequest.studyUID.equals("*")) {
+					dsoEditRequest.studyUID=dcm4CheeDatabaseOperations.getStudyUIDForSeries(seriesUID);
+				}
 			}
 			else
 			{
@@ -978,10 +1016,10 @@ public class DSOUtil
 							+ " in  series " + seriesUID);
 					if (editedFramesPNGMaskFiles.size() != dsoEditRequest.editedFrameNumbers.size())
 						throw new IOException("Number of files and frames number do not match");
-					if (aim != null && (aim.dsoFrameNo == 0 || aim.dsoFrameNo < dsoEditRequest.editedFrameNumbers.get(0))) {
-						aim.dsoFrameNo = dsoEditRequest.editedFrameNumbers.get(0);
-						epadDatabaseOperations.updateAIMDSOFrameNo(aim.aimID, aim.dsoFrameNo);
-					}
+//					if (aim != null && (aim.dsoFrameNo == 0 || aim.dsoFrameNo < dsoEditRequest.editedFrameNumbers.get(0))) {
+//						aim.dsoFrameNo = dsoEditRequest.editedFrameNumbers.get(0);
+//						epadDatabaseOperations.updateAIMDSOFrameNo(aim.aimID, aim.dsoFrameNo);
+//					}
 					DSOEditResult dsoEditResult = DSOUtil.createEditedDSO(dsoEditRequest, editedFramesPNGMaskFiles, aim.seriesUID);
 					if (dsoEditResult != null)
 					{
@@ -997,9 +1035,12 @@ public class DSOUtil
 						}
 						if (dsoEditResult.aimID != null && dsoEditResult.aimID.length() > 0)
 						{
+							log.info("update aim table dso first frame with "+ dsoEditResult.firstFrame + "for aim "+dsoEditResult.aimID);
+							epadDatabaseOperations.updateAIMDSOFrameNo(dsoEditResult.aimID, dsoEditResult.firstFrame);
 							List<ImageAnnotation> aims = AIMQueries.getAIMImageAnnotations(AIMSearchType.ANNOTATION_UID, dsoEditResult.aimID, "admin");
 							if (aims.size() > 0)
 							{
+								
 								log.info("DSO Annotation: " + dsoEditResult.aimID);
 //								String sessionID = XNATSessionOperations.getJSessionIDFromRequest(httpRequest);
 //								ImageAnnotation imageAnnotation =  aims.get(0);
@@ -1304,8 +1345,8 @@ public class DSOUtil
 
 	private static BufferedImage generateTransparentImage(BufferedImage source)
 	{
-		//Image image = makeColorOpaque(source, Color.WHITE); // Because somebody said to convert DSOs to white
-		Image image = makeAnyColorWhite(source); // To retain DSO color comment this out and uncomment previous line
+		Image image = makeColorOpaque(source, Color.BLACK); // Because somebody said to convert DSOs to white
+//		Image image = makeAnyColorWhite(source); // To retain DSO color comment this out and uncomment previous line
 		BufferedImage transparent = imageToBufferedImage(image);
 		Image image2 = makeColorTransparent(transparent, Color.BLACK);
 		BufferedImage transparent2 = imageToBufferedImage(image2);
@@ -1315,7 +1356,7 @@ public class DSOUtil
 	private static BufferedImage imageToBufferedImage(Image image)
 	{
 		BufferedImage bufferedImage = new BufferedImage(image.getWidth(null), image.getHeight(null),
-				BufferedImage.TYPE_INT_ARGB);
+				BufferedImage.TYPE_INT_ARGB); 
 		Graphics2D g2 = bufferedImage.createGraphics();
 		g2.drawImage(image, 0, 0, null);
 		g2.dispose();
@@ -1346,13 +1387,18 @@ public class DSOUtil
 
 	private static Image makeColorOpaque(BufferedImage im, final Color color)
 	{
+		nonBlank.set(false);
 		ImageFilter filter = new RGBImageFilter() {
 			public int markerRGB = color.getRGB() | 0xFF000000;
 
 			@Override
 			public final int filterRGB(int x, int y, int rgb)
 			{
+				if ((rgb & 0x00FFFFFF) != 0) {
+					nonBlank.set(true);
+				}
 				if ((rgb | 0xFF000000) == markerRGB) {
+//					nonBlank.set(true);
 					return 0xFF000000 | rgb;
 				} else {
 					return rgb;

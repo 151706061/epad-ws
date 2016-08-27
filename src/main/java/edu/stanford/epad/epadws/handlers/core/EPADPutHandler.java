@@ -115,6 +115,9 @@ import java.util.Set;
 import javax.servlet.http.HttpServletRequest;
 import javax.servlet.http.HttpServletResponse;
 
+import org.json.JSONArray;
+import org.json.JSONObject;
+
 import edu.stanford.epad.common.util.EPADConfig;
 import edu.stanford.epad.common.util.EPADFileUtils;
 import edu.stanford.epad.common.util.EPADLogger;
@@ -129,11 +132,13 @@ import edu.stanford.epad.dtos.EPADSubject;
 import edu.stanford.epad.dtos.RemotePAC;
 import edu.stanford.epad.epadws.aim.AIMSearchType;
 import edu.stanford.epad.epadws.aim.AIMUtil;
+import edu.stanford.epad.epadws.dcm4chee.Dcm4cheeServer;
 import edu.stanford.epad.epadws.epaddb.EpadDatabase;
 import edu.stanford.epad.epadws.handlers.HandlerUtil;
 import edu.stanford.epad.epadws.models.EpadFile;
 import edu.stanford.epad.epadws.models.FileType;
 import edu.stanford.epad.epadws.models.Project;
+import edu.stanford.epad.epadws.models.ProjectType;
 import edu.stanford.epad.epadws.models.RemotePACQuery;
 import edu.stanford.epad.epadws.models.Subject;
 import edu.stanford.epad.epadws.models.User;
@@ -210,11 +215,22 @@ public class EPADPutHandler
 				if (projectDescription == null)
 					projectDescription = httpRequest.getParameter("description");
 				String defaultTemplate = httpRequest.getParameter("defaultTemplate");
+				//get the annotation, it can be empty, or done(or 3) at this point
+				String annotationStatus = httpRequest.getParameter("annotationStatus");
+				
+				ProjectType type=ProjectType.PRIVATE;
+				if (httpRequest.getParameter("type")!=null && httpRequest.getParameter("type").equalsIgnoreCase("public"))
+					type=ProjectType.PUBLIC;
+				else type=ProjectType.PRIVATE;
+					
 				EPADProject project = epadOperations.getProjectDescription(projectReference, username, sessionID, false);
+				if (annotationStatus != null) {
+					projectOperations.updateAnnotationStatus(username, projectReference, annotationStatus, sessionID);
+				}
 				if (project != null) {
-					statusCode = epadOperations.updateProject(username, projectReference, projectName, projectDescription, defaultTemplate, sessionID);
+					statusCode = epadOperations.updateProject(username, projectReference, projectName, projectDescription, defaultTemplate, sessionID, type);
 				} else {
-					statusCode = epadOperations.createProject(username, projectReference, projectName, projectDescription, defaultTemplate, sessionID);
+					statusCode = epadOperations.createProject(username, projectReference, projectName, projectDescription, defaultTemplate, sessionID, type);
 				}
 				project = epadOperations.getProjectDescription(projectReference, username, sessionID, false);
 				responseStream.append(project.toJSON());
@@ -230,7 +246,13 @@ public class EPADPutHandler
 				String subjectName = httpRequest.getParameter("subjectName");
 				String gender = httpRequest.getParameter("gender");
 				String dob = httpRequest.getParameter("dob");
+				//get the annotation, it can be empty, or done(or 3) at this point
+				String annotationStatus = httpRequest.getParameter("annotationStatus");
+				
 				EPADSubject subject = epadOperations.getSubjectDescription(subjectReference, username, sessionID);
+				if (annotationStatus != null) {
+					projectOperations.updateAnnotationStatus(username, subjectReference, annotationStatus, sessionID);
+				}
 				if (subject != null) {
 					statusCode = epadOperations.updateSubject(username, subjectReference, subjectName, getDate(dob), gender, sessionID);
 				} else {
@@ -259,12 +281,17 @@ public class EPADPutHandler
 				if (description == null)
 					description = httpRequest.getParameter("studyDescription");
 				String studyDate = httpRequest.getParameter("studyDate");
+				//get the annotation, it can be empty, or done(or 3) at this point
+				String annotationStatus = httpRequest.getParameter("annotationStatus");
+				
 				statusCode = epadOperations.createStudy(username, studyReference, description, getDate(studyDate), sessionID);
 				if (uploadedFile != null && false) {
 					String fileType = httpRequest.getParameter("fileType");
 					statusCode = epadOperations.createFile(username, studyReference, uploadedFile, description, fileType, sessionID);					
 				}
-	
+				if (annotationStatus != null) {
+					projectOperations.updateAnnotationStatus(username, studyReference, annotationStatus, sessionID);
+				}
 			} else if (HandlerUtil.matchesTemplate(ProjectsRouteTemplates.STUDY_AIM, pathInfo)) {
 				StudyReference studyReference = StudyReference.extract(ProjectsRouteTemplates.STUDY_AIM, pathInfo);
 				AIMReference aimReference = AIMReference.extract(ProjectsRouteTemplates.STUDY_AIM, pathInfo);
@@ -278,14 +305,25 @@ public class EPADPutHandler
 				String modality = httpRequest.getParameter("modality");
 				String seriesDate = httpRequest.getParameter("seriesDate");
 				String referencedSeries = httpRequest.getParameter("referencedSeries");
+				//get the annotation, it can be empty, or done(or 3) at this point
+				String annotationStatus = httpRequest.getParameter("annotationStatus");
+				
 				if (referencedSeries == null)
 					referencedSeries = httpRequest.getParameter("referencedSeriesUID");
 				String defaultTags = httpRequest.getParameter("defaultTags");
-				if (defaultTags != null) {
-					epadOperations.updateSeriesTags(username, seriesReference, defaultTags, sessionID);
-				} else {
+				EPADSeries series = epadOperations.getSeriesDescription(seriesReference, username, sessionID);
+				if (series!=null) { //updating
+					
+					if (defaultTags != null) {
+						epadOperations.updateSeriesTags(username, seriesReference, defaultTags, sessionID);
+					}
+					if (annotationStatus != null) {
+						projectOperations.updateAnnotationStatus(username, seriesReference, annotationStatus, sessionID);
+					}
+				}
+				else {
 					// Create non-dicom series
-					EPADSeries series  = epadOperations.createSeries(username, seriesReference, description, getDate(seriesDate), modality, referencedSeries, sessionID);
+					series  = epadOperations.createSeries(username, seriesReference, description, getDate(seriesDate), modality, referencedSeries, sessionID);
 				}
 				if (uploadedFile != null && false) {
 					String fileType = httpRequest.getParameter("fileType");
@@ -322,7 +360,14 @@ public class EPADPutHandler
 				AIMSearchType aimSearchType = AIMUtil.getAIMSearchType(httpRequest);
 				
 				//ml 
-				String[] aims = httpRequest.getParameterValues("aims");
+				JSONObject aims = HandlerUtil.getPostedJson(httpRequest);
+			    JSONArray aimIDsJson = (JSONArray) aims.get("aims");
+			    String[] aimIDsStr= new String[aimIDsJson.length()];
+				for (int i = 0; i < aimIDsJson.length(); i++)
+				{
+					aimIDsStr[i] = aimIDsJson.getString(i);
+				}
+				log.info("aims array  "+ aimIDsStr);
 				
 				String searchValue = aimSearchType != null ? httpRequest.getParameter(aimSearchType.getName()) : null;
 				String templateName = httpRequest.getParameter("templateName");
@@ -331,11 +376,15 @@ public class EPADPutHandler
 				log.info("PUT request for AIMs from user " + username + "; query type is " + aimSearchType + ", value "
 						+ searchValue + ", project " + projectReference.projectID);
 				
-				if (aimSearchType.equals(AIMSearchType.ANNOTATION_UID)) {
+				String inParallel = httpRequest.getParameter("inParallel");
+				boolean isInParallel=!("false".equalsIgnoreCase(inParallel));
+
+				if (aimSearchType!=null && aimSearchType.equals(AIMSearchType.ANNOTATION_UID)) {
 					String[] aimIDs = searchValue.split(",");
-					AIMUtil.runPlugIn(aimIDs, templateName, projectReference.projectID, sessionID);
-				}else if (aims!=null && aims.length!=0) { //ml
-					AIMUtil.runPlugIn(aims, templateName, projectReference.projectID, sessionID);
+					AIMUtil.runPlugIn(aimIDs, templateName, projectReference.projectID, sessionID, isInParallel);
+				}else if (aims!=null && aimIDsStr.length!=0) { //ml
+					AIMUtil.runPlugIn(aimIDsStr, templateName, projectReference.projectID, sessionID, isInParallel);
+					
 				}
 				statusCode = HttpServletResponse.SC_OK;
 
@@ -414,7 +463,8 @@ public class EPADPutHandler
 				if (wl == null)
 					throw new Exception("Worklist not found for user " + reader);
 				User user = worklistOperations.getUserForWorkList(workListID);
-				if (!user.getUsername().equals(reader))
+				//ml user admin check  added
+				if (!user.isAdmin() && !user.getUsername().equals(reader))
 					throw new Exception("User " +  reader + " does not match user for worklist "+ workListID);
 				log.debug("Worklist parameters, wlstatus:" + wlstatus + " started:" + started + " completed:" + completed);
 				if (wlstatus == null && !started && !completed){
@@ -457,28 +507,30 @@ public class EPADPutHandler
 					worklistOperations.addStudyToWorkList(username, projectID, studyUID, workListID);
 					
 				statusCode = HttpServletResponse.SC_OK;
-	
-			} else if (HandlerUtil.matchesTemplate(UsersRouteTemplates.USER_PROJECT_SUBJECT, pathInfo)) {
-				Map<String, String> templateMap = HandlerUtil.getTemplateMap(UsersRouteTemplates.USER_PROJECT_SUBJECT, pathInfo);
-				String reader = HandlerUtil.getTemplateParameter(templateMap, "username");
-				String workListID = HandlerUtil.getTemplateParameter(templateMap, "worklistID");
-				String projectID = HandlerUtil.getTemplateParameter(templateMap, "projectID");
-				String subjectID = HandlerUtil.getTemplateParameter(templateMap, "subjectID");
-				String wlstatus = httpRequest.getParameter("status");
-				boolean started = "true".equalsIgnoreCase(httpRequest.getParameter("started"));
-				boolean completed = "true".equalsIgnoreCase(httpRequest.getParameter("completed"));
-				WorkList wl = worklistOperations.getWorkList(workListID);
-				if (wl == null)
-					throw new Exception("Worklist not found for user " + reader);
-				User user = worklistOperations.getUserForWorkList(workListID);
-				if (!user.getUsername().equals(reader))
-					throw new Exception("User " +  reader + " does not match user for worklist "+ workListID);
-				WorkListToSubject wls = worklistOperations.getWorkListSubjectStatus(workListID, projectID, subjectID);
-				if (wls == null)
-					worklistOperations.addSubjectToWorkList(username, projectID, subjectID, workListID);
-				worklistOperations.setWorkListSubjectStatus(reader, wl.getWorkListID(), projectID, subjectID, wlstatus, started, completed);
-				statusCode = HttpServletResponse.SC_OK;
-	
+				
+				//ml seems duplicate
+//			} else if (HandlerUtil.matchesTemplate(UsersRouteTemplates.USER_PROJECT_SUBJECT, pathInfo)) {
+//				Map<String, String> templateMap = HandlerUtil.getTemplateMap(UsersRouteTemplates.USER_PROJECT_SUBJECT, pathInfo);
+//				String reader = HandlerUtil.getTemplateParameter(templateMap, "username");
+//				String workListID = HandlerUtil.getTemplateParameter(templateMap, "worklistID");
+//				String projectID = HandlerUtil.getTemplateParameter(templateMap, "projectID");
+//				String subjectID = HandlerUtil.getTemplateParameter(templateMap, "subjectID");
+//				String wlstatus = httpRequest.getParameter("status");
+//				boolean started = "true".equalsIgnoreCase(httpRequest.getParameter("started"));
+//				boolean completed = "true".equalsIgnoreCase(httpRequest.getParameter("completed"));
+//				WorkList wl = worklistOperations.getWorkList(workListID);
+//				if (wl == null)
+//					throw new Exception("Worklist not found for user " + reader);
+//				User user = worklistOperations.getUserForWorkList(workListID);
+//				//ml user admin check
+//				if (!user.isAdmin() || !user.getUsername().equals(reader))
+//					throw new Exception("User " +  reader + " does not match user for worklist "+ workListID);
+//				WorkListToSubject wls = worklistOperations.getWorkListSubjectStatus(workListID, projectID, subjectID);
+//				if (wls == null)
+//					worklistOperations.addSubjectToWorkList(username, projectID, subjectID, workListID);
+//				worklistOperations.setWorkListSubjectStatus(reader, wl.getWorkListID(), projectID, subjectID, wlstatus, started, completed);
+//				statusCode = HttpServletResponse.SC_OK;
+//	
 			} else if (HandlerUtil.matchesTemplate(UsersRouteTemplates.USER_PROJECT_STUDY, pathInfo)) {
 				Map<String, String> templateMap = HandlerUtil.getTemplateMap(UsersRouteTemplates.USER_PROJECT_STUDY, pathInfo);
 				String reader = HandlerUtil.getTemplateParameter(templateMap, "username");
@@ -578,11 +630,26 @@ public class EPADPutHandler
 						throw new Exception("TCIA Collections can not be added or edited");
 					pac = new RemotePAC(pacid, aeTitle, hostname, port, queryModel, primaryDeviceType);
 					RemotePACService.getInstance().addRemotePAC(username, pac);
+					
+					Dcm4cheeServer instanceDcm4cheeServer = new Dcm4cheeServer();
+					instanceDcm4cheeServer.connect(EPADConfig.jmxUserName, EPADConfig.jmxUserPass, EPADConfig.dcm4CheeServer,(short) EPADConfig.dcm4cheeServerWadoPort);
+					instanceDcm4cheeServer.addAetitle(pac.aeTitle, pac.hostname, Integer.toString(pac.port));
+					
+					
+				
 				}
 				else
 				{
 					pac = new RemotePAC(pacid, aeTitle, hostname, port, queryModel, primaryDeviceType);
+					RemotePAC oldpac = RemotePACService.getInstance().getRemotePAC(pacid);
+					Dcm4cheeServer instanceDcm4cheeServer = new Dcm4cheeServer();
+					instanceDcm4cheeServer.connect(EPADConfig.jmxUserName, EPADConfig.jmxUserPass, EPADConfig.dcm4CheeServer,(short) EPADConfig.dcm4cheeServerWadoPort);
+					instanceDcm4cheeServer.editAetConfig(oldpac.hostname, pac.aeTitle, pac.hostname, Integer.toString(pac.port));
+					
+					
 					RemotePACService.getInstance().modifyRemotePAC(username, pac);
+				
+					
 				}
 				statusCode = HttpServletResponse.SC_OK;
 				
@@ -823,12 +890,14 @@ public class EPADPutHandler
 				String developer = httpRequest.getParameter("developer");
 				String documentation = httpRequest.getParameter("documentation");
 				String rate = httpRequest.getParameter("rate");
+				String processMultipleAims = httpRequest.getParameter("processMultipleAims");
+				boolean isProcessMultipleAims = ("true".equalsIgnoreCase(processMultipleAims));
 				boolean isUpdate = pluginOperations.doesPluginExist(pluginReference.pluginID, username, sessionID);
 				if (isUpdate) {
-					pluginOperations.updatePlugin(username, pluginReference.pluginID, name, description, javaclass, enabled, modality, developer,documentation,rate,sessionID);
+					pluginOperations.updatePlugin(username, pluginReference.pluginID, name, description, javaclass, enabled, modality, developer,documentation,rate,sessionID, isProcessMultipleAims);
 					return HttpServletResponse.SC_OK;
 				} else {
-					pluginOperations.createPlugin(username, pluginReference.pluginID, name, description, javaclass, enabled, modality, developer,documentation,rate, sessionID);
+					pluginOperations.createPlugin(username, pluginReference.pluginID, name, description, javaclass, enabled, modality, developer,documentation,rate, sessionID, isProcessMultipleAims);
 					return HttpServletResponse.SC_OK;
 				}	
 			} else if (HandlerUtil.matchesTemplate(ProjectsRouteTemplates.PLUGIN, pathInfo)) { //ML

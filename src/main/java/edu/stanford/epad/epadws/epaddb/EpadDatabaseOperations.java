@@ -110,6 +110,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
+import edu.stanford.epad.dtos.AnnotationStatus;
 import edu.stanford.epad.dtos.EPADAIM;
 import edu.stanford.epad.dtos.EPADDataList;
 import edu.stanford.epad.dtos.PNGFileProcessingStatus;
@@ -391,5 +392,39 @@ public interface EpadDatabaseOperations
 	boolean runSQLScript(String script);
 
 	String getDBVersion();
+
+	/**
+	 * Faster annotation count using database join
+	 * @param projectID
+	 * @param studyUID
+	 * @param username
+	 * @return aim count
+	 * @author emelalkim
+	 */
+	int getAIMCount(String projectID, String studyUID, String username);
+
+	/**
+	 * Gets all the parameters and returns the annotation status for that specific user and series
+	 * @param projectuid
+	 * @param subjectuid
+	 * @param studyuid
+	 * @param seriesuid
+	 * @param username
+	 * @return annotation status see AnnotationStatus class for values or null
+	 * @author emelalkim
+	 */
+	AnnotationStatus getAnnotationStatusForUser(String projectUID, String subjectUID, String studyUID,
+			String series_uid, String username);
+
+	/**
+	 * Gets the number of users that are done annotating the specific series for the project
+	 * @param projectUID
+	 * @param subjectUID
+	 * @param studyUID
+	 * @param series_uid
+	 * @return count or 0
+	 * @author emelalkim
+	 */
+	int getAnnotationDoneUserCount(String projectUID, String subjectUID, String studyUID, String series_uid);
 
 }

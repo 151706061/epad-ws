@@ -146,6 +146,7 @@ import edu.stanford.epad.epadws.handlers.core.ProjectReference;
 import edu.stanford.epad.epadws.handlers.core.SeriesReference;
 import edu.stanford.epad.epadws.handlers.core.StudyReference;
 import edu.stanford.epad.epadws.handlers.core.SubjectReference;
+import edu.stanford.epad.epadws.models.ProjectType;
 import edu.stanford.epad.epadws.security.EPADSession;
 
 /**
@@ -251,6 +252,20 @@ public interface EpadOperations
 	 */
 	EPADSeriesList getSeriesDescriptions(StudyReference studyReference, String username, String sessionID,
 			EPADSearchFilter searchFilter, boolean filterDSOs) throws Exception;
+
+	/**
+	 * Get series descriptions for a study
+	 * @param studyReference
+	 * @param username
+	 * @param sessionID
+	 * @param searchFilter
+	 * @param filterDSOs
+	 * @param includeAnnotationStatus
+	 * @return
+	 * @throws Exception
+	 */
+	EPADSeriesList getSeriesDescriptions(StudyReference studyReference, String username, String sessionID,
+			EPADSearchFilter searchFilter, boolean filterDSOs, boolean includeAnnotationStatus) throws Exception;
 
 	/**
 	 * Get series description
@@ -675,6 +690,15 @@ public interface EpadOperations
 	EPADTemplateContainerList getTemplateDescriptions(String username, String sessionID) throws Exception;
 
 	/**
+	 * Get templates with templateleveltypefilter
+	 * @param username
+	 * @param sessionID
+	 * @return
+	 * @throws Exception
+	 */
+	EPADTemplateContainerList getTemplateDescriptions(String username, String sessionID, String templateLevelFilter) throws Exception;
+
+	/**
 	 * Get system-wide templates
 	 * @param username
 	 * @param sessionID
@@ -691,7 +715,7 @@ public interface EpadOperations
 	 * @return
 	 * @throws Exception
 	 */
-	EPADTemplateContainerList getTemplateDescriptions(String projectID, String username, String sessionID) throws Exception;
+	EPADTemplateContainerList getProjectTemplateDescriptions(String projectID, String username, String sessionID) throws Exception;
 	
 	/**
 	 * @param seriesReference
@@ -933,6 +957,17 @@ public interface EpadOperations
 	String studyDelete(StudyReference studyReference, String sessionID, boolean deleteAims, String username) throws Exception;
 
 	/**
+	 * @param studyReference
+	 * @param sessionID
+	 * @param deleteAims
+	 * @param username
+	 * @param all
+	 * @return
+	 * @throws Exception
+	 */
+	String studyDelete(StudyReference studyReference, String sessionID, boolean deleteAims, String username, boolean all) throws Exception;
+
+	/**
 	 * Delete series
 	 * @param seriesReference
 	 * @param sessionID
@@ -941,6 +976,17 @@ public interface EpadOperations
 	 * @return
 	 */
 	String seriesDelete(SeriesReference seriesReference, String sessionID, boolean deleteAims, String username) throws Exception;
+	
+	/**
+	 * Delete series
+	 * @param seriesReference
+	 * @param sessionID
+	 * @param deleteAims
+	 * @param username
+	 * @param all
+	 * @return
+	 */
+	String seriesDelete(SeriesReference seriesReference, String sessionID, boolean deleteAims, String username, boolean all) throws Exception;
 	
 	/**
 	 * Delete series
@@ -1378,4 +1424,153 @@ public interface EpadOperations
 	 */
 	EPADEventLogList getEventLogs(String loggedInUser, String username, int start, int count) throws Exception;
 	EPADObjectList getTaskStatuses(String loggedInUser, String username) throws Exception;
+	
+	
+	EPADProjectList getProjectsForStudy(String username, String sessionID, EPADSearchFilter searchFilter, boolean annotationCount, String studyUID)  throws Exception; //ml
+	EPADProjectList getProjectsForSubject(String username, String sessionID, EPADSearchFilter searchFilter, boolean annotationCount, String subjectUID)  throws Exception; //ml
+
+	int createProject(String username, ProjectReference projectReference, String projectName, String projectDescription,
+			String defaultTemplate, String sessionID, ProjectType type) throws Exception;
+
+	int updateProject(String username, ProjectReference projectReference, String projectName, String projectDescription,
+			String defaultTemplate, String sessionID, ProjectType type) throws Exception;
+
+	/**
+	 * get series description with or without annotation status
+	 * @param seriesReference
+	 * @param username
+	 * @param sessionID
+	 * @param includeAnnotationStatus
+	 * @return series with annotation status (see AnnotationStatus class)
+	 */
+	EPADSeries getSeriesDescription(SeriesReference seriesReference, String username, String sessionID,
+			boolean includeAnnotationStatus);
+
+	/**
+	 * get study description with or without annotation status
+	 * @param studyReference
+	 * @param username
+	 * @param sessionID
+	 * @param includeAnnotationStatus
+	 * @return study with annotation status (see AnnotationStatus class)
+	 * @throws Exception
+	 */
+	EPADStudy getStudyDescription(StudyReference studyReference, String username, String sessionID,
+			boolean includeAnnotationStatus) throws Exception;
+
+	/**
+	 * get study descriptions with or without annotation status
+	 * @param studyReference
+	 * @param username
+	 * @param sessionID
+	 * @param includeAnnotationStatus
+	 * @return study with annotation status (see AnnotationStatus class)
+	 * @throws Exception
+	 */
+	EPADStudyList getStudyDescriptions(SubjectReference subjectReference, String username, String sessionID,
+			EPADSearchFilter searchFilter, boolean includeAnnotationStatus) throws Exception;
+
+	/**
+	 * get subject description with or without annotation status
+	 * @param subjectReference
+	 * @param username
+	 * @param sessionID
+	 * @param includeAnnotationStatus
+	 * @return subject with annotation status (see AnnotationStatus class)
+	 * @throws Exception
+	 */
+	EPADSubject getSubjectDescription(SubjectReference subjectReference, String username, String sessionID,
+			boolean includeAnnotationStatus) throws Exception;
+
+	/**
+	 * get subject descriptions with or without annotation status
+	 * @param projectID
+	 * @param username
+	 * @param sessionID
+	 * @param searchFilter
+	 * @param start
+	 * @param count
+	 * @param sortField
+	 * @param annotationCount
+	 * @param includeAnnotationStatus
+	 * @return subjects with annotation status (see AnnotationStatus class)
+	 * @throws Exception
+	 */
+	EPADSubjectList getSubjectDescriptions(String projectID, String username, String sessionID,
+			EPADSearchFilter searchFilter, int start, int count, String sortField, boolean annotationCount,
+			boolean includeAnnotationStatus) throws Exception;
+
+	/**
+	 * get project description with or without annotation status
+	 * @param projectReference
+	 * @param username
+	 * @param sessionID
+	 * @param annotationCount
+	 * @param includeAnnotationStatus
+	 * @return project with annotation status (see AnnotationStatus class)
+	 * @throws Exception
+	 */
+	EPADProject getProjectDescription(ProjectReference projectReference, String username, String sessionID,
+			boolean annotationCount, boolean includeAnnotationStatus) throws Exception;
+
+	/** 
+	 * get project descriptions with or without annotation status
+	 * @param username
+	 * @param sessionID
+	 * @param searchFilter
+	 * @param annotationCount
+	 * @param ignoreSystem
+	 * @param includeAnnotationStatus
+	 * @return projects with annotation status (see AnnotationStatus class)
+	 * @throws Exception
+	 */
+	EPADProjectList getProjectDescriptions(String username, String sessionID, EPADSearchFilter searchFilter,
+			boolean annotationCount, boolean ignoreSystem, boolean includeAnnotationStatus) throws Exception;
+
+	/**
+	 * get templates with specific template description (filters with starts with)
+	 * @param projectID
+	 * @param username
+	 * @param sessionID
+	 * @param templateLevelFilter Send null if you do not want to filter
+	 * @return
+	 * @throws Exception
+	 */
+	EPADTemplateContainerList getProjectTemplateDescriptions(String projectID, String username, String sessionID,
+			String templateLevelFilter) throws Exception;
+
+	/**
+	 * get system templates with specific template description (filters with starts with)
+	 * @param projectID
+	 * @param username
+	 * @param sessionID
+	 * @param templateLevelFilter Send null if you do not want to filter
+	 * @return
+	 * @throws Exception
+	 */
+	EPADTemplateContainerList getSystemTemplateDescriptions(String username, String sessionID,
+			String templateLevelFilter) throws Exception;
+
+	
+	/**
+	 * get study descriptions that are not accessed than given number of days
+	 * @param username
+	 * @param sessionID
+	 * @param days
+	 * @return
+	 * @throws Exception
+	 */
+	EPADStudyList getStudyDescriptions(String username, String sessionID, Integer days) throws Exception;
+
+	/**
+	 * get template descriptions filtering with templateLevelFilter and includeSystemTemplates
+	 * @param username
+	 * @param sessionID
+	 * @param templateLevelFilter
+	 * @param includeSystemTemplates
+	 * @return
+	 * @throws Exception
+	 */
+	EPADTemplateContainerList getTemplateDescriptions(String username, String sessionID, String templateLevelFilter,
+			boolean includeSystemTemplates) throws Exception;
 }

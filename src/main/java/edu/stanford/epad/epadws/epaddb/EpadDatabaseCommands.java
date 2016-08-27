@@ -131,6 +131,8 @@ public interface EpadDatabaseCommands
 	public static final String GET_EPAD_SERIES_TAGS = "SELECT default_tags from epaddb.series_status where series_iuid=?";
 	public static final String SELECT_EPAD_SERIES_BY_ID = "SELECT * from epaddb.series_status where series_iuid=?";
 	public static final String SELECT_DCM4CHE_STUDY_BY_ID = "SELECT study_iuid,study_desc,study_datetime,accession_no from pacsdb.study where study_iuid=?";
+	public static final String SELECT_ANNOTATION_STATUS_FOR_SERIES_BY_IDs = "SELECT annotationstatus from epaddb.project_subject_study_series_user_status s, epaddb.project p, epaddb.subject su, epaddb.study st, epaddb.user u  where s.project_id=p.id and s.subject_id=su.id and s.study_id=st.id and s.user_id=u.id and p.projectid=? and su.subjectuid=? and st.studyuid=? and series_uid=? and u.username=?";
+	public static final String SELECT_ANNOTATION_DONE_COUNT_FOR_SERIES_BY_IDs = "SELECT count(*) from epaddb.project_subject_study_series_user_status s, epaddb.project p, epaddb.subject su, epaddb.study st  where s.project_id=p.id and s.subject_id=su.id and s.study_id=st.id and p.projectid=? and su.subjectuid=? and st.studyuid=? and series_uid=? and s.annotationstatus=3";
 	public static final String SELECT_STATUS_FOR_SERIES_BY_ID = "SELECT status from epaddb.series_status where series_iuid=?";
 	public static final String SELECT_STATUS_AND_CREATED_TIME_FOR_SERIES_BY_ID = "SELECT status,created_time from epaddb.series_status where series_iuid=?";
 
@@ -141,7 +143,8 @@ public interface EpadDatabaseCommands
 	public static final String DELETE_FROM_EPAD_FILES = "delete from epaddb.epad_files where file_path like ?";
 	public static final String INSERT_INTO_EPAD_FILES = "INSERT INTO epaddb.epad_files"
 			+ "(instance_fk,file_type,file_path,file_size,file_status,err_msg,file_md5)" + "VALUES (?,?,?,?,?,?,?)";
-	public static final String SELECT_EPAD_FILE_PATH_FOR_IMAGE = "SELECT file_path from epaddb.epad_files as f, pacsdb.instance as i where i.sop_iuid=? and i.pk = f.instance_fk";
+	//pk added for removing broken links
+	public static final String SELECT_EPAD_FILE_PATH_FOR_IMAGE = "SELECT file_path, f.pk from epaddb.epad_files as f, pacsdb.instance as i where i.sop_iuid=? and i.pk = f.instance_fk";
 	public static final String SELECT_EPAD_FILE_PATH_BY_IMAGE_UID = "SELECT file_path from epaddb.epad_files as f where file_path like ?";
 
 	public static final String SELECT_COORDINATION_USING_KEY = "select coordination_id, schema_name, schema_version, description "

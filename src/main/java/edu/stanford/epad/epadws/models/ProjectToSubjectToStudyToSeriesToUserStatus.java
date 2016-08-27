@@ -102,194 +102,133 @@
  * of non-limiting example, you will not contribute any code obtained by you under the GNU General Public License or other 
  * so-called "reciprocal" license.)
  *******************************************************************************/
-package edu.stanford.epad.epadws.processing.pipeline.task;
+package edu.stanford.epad.epadws.models;
 
-import java.io.File;
-import java.util.ArrayList;
-import java.util.Collections;
-import java.util.HashSet;
-import java.util.List;
-import java.util.Set;
+import java.util.Date;
 
-import edu.stanford.epad.common.util.EPADConfig;
-import edu.stanford.epad.common.util.EPADLogger;
-import edu.stanford.epad.common.util.EventMessageCodes;
-import edu.stanford.epad.dtos.EPADAIM;
-import edu.stanford.epad.dtos.SeriesProcessingStatus;
-import edu.stanford.epad.epadws.aim.AIMQueries;
-import edu.stanford.epad.epadws.aim.AIMSearchType;
-import edu.stanford.epad.epadws.aim.AIMUtil;
-import edu.stanford.epad.epadws.aim.aimapi.Aim;
-import edu.stanford.epad.epadws.epaddb.EpadDatabase;
-import edu.stanford.epad.epadws.epaddb.EpadDatabaseOperations;
-import edu.stanford.epad.epadws.handlers.dicom.DSOUtil;
-import edu.stanford.epad.epadws.models.Project;
-import edu.stanford.epad.epadws.models.Study;
-import edu.stanford.epad.epadws.processing.model.DicomSeriesProcessingStatusTracker;
-import edu.stanford.epad.epadws.processing.model.SeriesPipelineState;
-import edu.stanford.epad.epadws.service.DefaultEpadProjectOperations;
-import edu.stanford.epad.epadws.service.EpadProjectOperations;
-import edu.stanford.epad.epadws.service.UserProjectService;
-import edu.stanford.hakan.aim4api.compability.aimv3.ImageAnnotation;
+import edu.stanford.epad.dtos.AnnotationStatus;
+import edu.stanford.epad.epadws.models.dao.AbstractDAO;
 
-public class DSOMaskPNGGeneratorTask implements GeneratorTask
-{
-	private static final EPADLogger log = EPADLogger.getInstance();
+public class ProjectToSubjectToStudyToSeriesToUserStatus extends AbstractDAO {
 
-	private final String studyUID;
-	private final String seriesUID;
-	private final File dsoFile;
-	private final boolean generateAIM;
-	private final String tagFilePath;
+	long id;
+	long projectId;
+	long subjectId;
+	long studyId;
+	String seriesUID;
+	long userId;
+	int annotationStatus;
+	String creator;
+	Date createdTime;
+	Date updateTime;
 
-	static public Set seriesBeingProcessed = Collections.synchronizedSet(new HashSet());
+	@Override
+	public long getId() {
+		return id;
+	}
+
+	public void setId(long id) {
+		this.id = id;
+	}
 	
-	public DSOMaskPNGGeneratorTask(String studyUID, String seriesUID, File dsoFile, boolean generateAIM, String tagFilePath)
-	{
-		this.studyUID = studyUID;
+	public long getProjectId() {
+		return projectId;
+	}
+
+	public void setProjectId(long projectId) {
+		this.projectId = projectId;
+	}
+
+	public long getSubjectId() {
+		return subjectId;
+	}
+
+	public void setSubjectId(long subjectId) {
+		this.subjectId = subjectId;
+	}
+
+	public long getStudyId() {
+		return studyId;
+	}
+
+	public void setStudyId(long studyId) {
+		this.studyId = studyId;
+	}
+
+	public String getSeriesUID() {
+		return seriesUID;
+	}
+
+	public void setSeriesUID(String seriesUID) {
 		this.seriesUID = seriesUID;
-		this.dsoFile = dsoFile;
-		this.generateAIM = generateAIM;
-		this.tagFilePath = tagFilePath;
+	}
+
+	public long getUserId() {
+		return userId;
+	}
+
+	public void setUserId(long userId) {
+		this.userId = userId;
+	}
+
+	public int getAnnotationStatus() {
+		return annotationStatus;
+	}
+
+	public void setAnnotationStatus(int annotationStatus) {
+		this.annotationStatus = annotationStatus;
+	}
+
+	public String getCreator() {
+		return creator;
+	}
+
+	public void setCreator(String creator) {
+		this.creator = creator;
+	}
+
+	public Date getCreatedTime() {
+		return createdTime;
+	}
+
+	public void setCreatedTime(Date createdTime) {
+		this.createdTime = createdTime;
+	}
+
+	public Date getUpdateTime() {
+		return updateTime;
+	}
+
+	public void setUpdateTime(Date updateTime) {
+		this.updateTime = updateTime;
+	}
+
+
+
+
+	public final static String DBTABLE = "project_subject_study_series_user_status";
+	public final static String[][] DBCOLUMNS = {
+        {"id","long","id","Id"},
+        {"projectId","long","project_id","integer"},
+        {"subjectId","long","subject_id","integer"},
+        {"studyId","long","study_id","integer"},
+        {"seriesUID","String","series_uid","varchar"},
+        {"userId","long","user_id","integer"},
+        {"annotationStatus","int","annotationStatus","integer"},
+        {"creator","String","creator","varchar"},
+        {"createdTime","Date","createdtime","timestamp"},
+        {"updateTime","Date","updatetime","timestamp"},	
+	};
+
+	
+	@Override
+	public String returnDBTABLE() {
+		return DBTABLE;
 	}
 
 	@Override
-	public void run()
-	{
-		Thread.currentThread().setPriority(Thread.MIN_PRIORITY); // Let interactive thread run sooner
-		if (seriesBeingProcessed.contains(seriesUID))
-		{
-			log.info("DSO series  " + seriesUID + " already being processed");
-			return;
-		}
-		log.info("Processing DSO for series  " + seriesUID + "; file=" + dsoFile.getAbsolutePath());
-		EpadDatabaseOperations epadDatabaseOperations = EpadDatabase.getInstance().getEPADDatabaseOperations();
-		EpadProjectOperations projectOperations = DefaultEpadProjectOperations.getInstance();
-		if (UserProjectService.pendingUploads.containsKey(studyUID))
-		{
-			String username = UserProjectService.pendingUploads.get(studyUID);
-			String projectID = EPADConfig.xnatUploadProjectID;
-			if (username != null && username.indexOf(":") != -1)
-			{
-				projectID = username.substring(username.indexOf(":")+1);
-				username = username.substring(0, username.indexOf(":"));
-			}
-			if (username != null)
-			{
-				epadDatabaseOperations.insertEpadEvent(
-						username, 
-						EventMessageCodes.STUDY_PROCESSED, 
-						"", "", "", "", "", "", 
-						"Study:" + studyUID,
-						projectID,"",studyUID,"",false);					
-				UserProjectService.pendingUploads.remove(studyUID);
-			}
-		}
-
-		try {
-			seriesBeingProcessed.add(seriesUID);
-			try {
-				DSOUtil.writeDSOMaskPNGs(dsoFile);
-			} catch (Exception x) {
-				log.warning("Error generating PNGs DSO series " + seriesUID, x);
-				SeriesPipelineState status = DicomSeriesProcessingStatusTracker.getInstance().getDicomSeriesProcessingStatus(seriesUID);
-				if (status != null)
-					DicomSeriesProcessingStatusTracker.getInstance().removeSeriesPipelineState(status);
-				epadDatabaseOperations.updateOrInsertSeries(seriesUID, SeriesProcessingStatus.ERROR);
-				throw x;
-			} catch (Error x) {
-				log.warning("Error generating PNGs DSO series " + seriesUID, x);
-				SeriesPipelineState status = DicomSeriesProcessingStatusTracker.getInstance().getDicomSeriesProcessingStatus(seriesUID);
-				if (status != null)
-					DicomSeriesProcessingStatusTracker.getInstance().removeSeriesPipelineState(status);
-				epadDatabaseOperations.updateOrInsertSeries(seriesUID, SeriesProcessingStatus.ERROR);
-				throw x;
-			}
-			// Must be first upload, create AIM file
-			List<EPADAIM> aims = EpadDatabase.getInstance().getEPADDatabaseOperations().getAIMsByDSOSeries(seriesUID);
-			List<ImageAnnotation> ias = AIMQueries.getAIMImageAnnotations(AIMSearchType.SERIES_UID, seriesUID, "admin", 1, 50);
-			String projectID = null;
-			if (aims.size() == 0 && generateAIM)
-			{
-				List<Project> projects = projectOperations.getProjectsForStudy(studyUID);
-				Study study = projectOperations.getStudy(studyUID);
-				String username = study.getCreator();
-				for (Project project: projects)
-				{
-					if (project.getProjectId().equals(EPADConfig.xnatUploadProjectID)) continue;
-					projectID = project.getProjectId();
-					if ("admin".equals(username))
-						username = project.getCreator();
-				}
-				ImageAnnotation ia = AIMUtil.generateAIMFileForDSO(dsoFile, username, projectID);
-				ias = new ArrayList<ImageAnnotation>();
-				ias.add(ia);
-			}
-			if (ias.size() != 0 && ias.get(0).getCodingSchemeDesignator() != null && ias.get(0).getCodingSchemeDesignator().equals("epad-plugin"))
-			{
-				ImageAnnotation ia = ias.get(0);
-				Aim aim = new Aim(ia);
-				epadDatabaseOperations.insertEpadEvent(
-						ia.getListUser().get(0).getLoginName(), 
-						EventMessageCodes.IMAGE_PROCESSED, 
-						ia.getUniqueIdentifier(), ia.getName(),
-						aim.getPatientID(), 
-						aim.getPatientName(), 
-						aim.getCodeMeaning(), 
-						aim.getCodeValue(),
-						"DSO Plugin", projectID,"","",seriesUID, false);					
-			}
-			else if (ias.size() != 0 && UserProjectService.pendingPNGs.containsKey(seriesUID))
-			{
-				ImageAnnotation ia = ias.get(0);
-				Aim aim = new Aim(ia);
-				String username = UserProjectService.pendingPNGs.get(seriesUID);
-				if (username != null && username.indexOf(":") != -1)
-					username = username.substring(0, username.indexOf(":"));
-				if (username != null)
-				{
-					epadDatabaseOperations.insertEpadEvent(
-							ia.getListUser().get(0).getLoginName(), 
-							EventMessageCodes.IMAGE_PROCESSED, 
-							ia.getUniqueIdentifier(), ia.getName(),
-							aim.getPatientID(), 
-							aim.getPatientName(), 
-							aim.getCodeMeaning(), 
-							aim.getCodeValue(),
-							"", projectID,"","",seriesUID, false);					
-					UserProjectService.pendingPNGs.remove(seriesUID);
-				}
-			}
-					 
-		} catch (Exception e) {
-			log.warning("Error writing AIM file for DSO series " + seriesUID, e);
-		} finally {
-			log.info("DSO for series " + seriesUID + " completed");
-			seriesBeingProcessed.remove(seriesUID);
-		}
+	public String[][] returnDBCOLUMNS() {
+		return DBCOLUMNS;
 	}
 
-	@Override
-	public File getDICOMFile()
-	{
-		return dsoFile;
-	}
-
-	@Override
-	public String getTagFilePath()
-	{
-		return tagFilePath;
-	}
-
-	@Override
-	public String getTaskType()
-	{
-		return "DSOPNGMaskGeneration";
-	}
-
-	@Override
-	public String getSeriesUID()
-	{
-		return this.seriesUID;
-	}
 }

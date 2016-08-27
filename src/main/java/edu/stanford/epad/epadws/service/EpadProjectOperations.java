@@ -109,6 +109,11 @@ import java.util.Date;
 import java.util.List;
 import java.util.Map;
 
+import edu.stanford.epad.dtos.AnnotationStatus;
+import edu.stanford.epad.epadws.handlers.core.ProjectReference;
+import edu.stanford.epad.epadws.handlers.core.SeriesReference;
+import edu.stanford.epad.epadws.handlers.core.StudyReference;
+import edu.stanford.epad.epadws.handlers.core.SubjectReference;
 import edu.stanford.epad.epadws.models.EpadFile;
 import edu.stanford.epad.epadws.models.EpadStatistics;
 import edu.stanford.epad.epadws.models.EventLog;
@@ -955,4 +960,124 @@ public interface EpadProjectOperations {
 	 * @throws Exception
 	 */
 	List sort(List<AbstractDAO> objects, String field, boolean ascending);
+	
+	/**
+	 * get user count for a specific project with project uid
+	 * @param projectId
+	 * @return count
+	 * @throws Exception
+	 */
+	long getUserCountProject(String projectId) throws Exception;
+	
+	/**
+	 * get user count for a specific project with project id
+	 * @param id
+	 * @return count
+	 * @throws Exception
+	 */
+	long getUserCountForProject(long id) throws Exception;
+	
+	/**
+	 * Gets all the parameters and returns the annotation status for that specific user and series
+	 * @param projectuid
+	 * @param subjectuid
+	 * @param studyuid
+	 * @param seriesuid
+	 * @param username
+	 * @param numberOfSeries for cumulative status
+	 * @return annotation status see AnnotationStatus class for values or null
+	 * @author emelalkim
+	 */
+	AnnotationStatus getAnnotationStatusForUser(String projectUID, String subjectUID, String studyUID,
+			String series_uid, String username, int numberOfSeries);
+	
+	
+	/**
+	 * Gets the number of users that are in the status annotating the specific series for the project (using model)
+	 * @param projectUID
+	 * @param subjectUID
+	 * @param studyUID
+	 * @param series_uid
+	 * @param status annotation status
+	 * @return count or 0
+	 * @author emelalkim
+	 */
+	int getAnnotationStatusUserCount(String projectUID, String subjectUID, String studyUID, String series_uid,
+			AnnotationStatus status);
+	/**
+	 * update annotation status for user
+	 * if annotation status can be converted to an integer writes it
+	 * if not checks if it is DONE
+	 * if not writes error
+	 * see AnnotationStatus class for the code values
+	 * @param username
+	 * @param seriesReference
+	 * @param annotationStatus
+	 * @param sessionID
+	 * @throws Exception
+	 */
+	void updateAnnotationStatus(String username, SeriesReference seriesReference, String annotationStatus,
+			String sessionID) throws Exception;
+	
+	/**
+	 * updates the annotation status for whole study
+	 * @param username
+	 * @param studyReference
+	 * @param annotationStatus
+	 * @param sessionID
+	 * @throws Exception
+	 */
+	void updateAnnotationStatus(String username, StudyReference studyReference, String annotationStatus,
+			String sessionID) throws Exception;
+	
+	/**
+	 * updates the annotation status for whole subject
+	 * @param username
+	 * @param subjectReference
+	 * @param annotationStatus
+	 * @param sessionID
+	 * @throws Exception
+	 */
+	void updateAnnotationStatus(String username, SubjectReference subjectReference, String annotationStatus,
+			String sessionID) throws Exception;
+	
+	/**
+	 * updates the annotation status for whole project
+	 * @param username
+	 * @param projectReference
+	 * @param annotationStatus
+	 * @param sessionID
+	 * @throws Exception
+	 */
+	void updateAnnotationStatus(String username, ProjectReference projectReference, String annotationStatus,
+			String sessionID) throws Exception;
+	
+	/**
+	 * create file with templateleveltype information
+	 * @param loggedInUser
+	 * @param projectID
+	 * @param subjectUID
+	 * @param studyUID
+	 * @param seriesUID
+	 * @param file
+	 * @param filename
+	 * @param description
+	 * @param fileType
+	 * @param templateLevelType
+	 * @return
+	 * @throws Exception
+	 */
+	EpadFile createFile(String loggedInUser, String projectID, String subjectUID, String studyUID, String seriesUID,
+			File file, String filename, String description, FileType fileType, String templateLevelType)
+			throws Exception;
+	
+	/**
+	 * get studies older than given number of days
+	 * @param days
+	 * @return
+	 * @throws Exception
+	 */
+	List<Study> getStudiesOlderThanDays(Integer days) throws Exception;
+	
+	
 }

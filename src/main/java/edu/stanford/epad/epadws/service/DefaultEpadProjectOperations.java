@@ -120,12 +120,21 @@ import org.mindrot.jbcrypt.BCrypt;
 
 import edu.stanford.epad.common.util.EPADConfig;
 import edu.stanford.epad.common.util.EPADLogger;
+import edu.stanford.epad.dtos.AnnotationStatus;
+import edu.stanford.epad.dtos.EPADStudy;
 import edu.stanford.epad.dtos.TaskStatus;
 import edu.stanford.epad.dtos.internal.DCM4CHEESeries;
 import edu.stanford.epad.epadws.aim.AIMDatabaseOperations;
+import edu.stanford.epad.epadws.dcm4chee.Dcm4CheeDatabase;
+import edu.stanford.epad.epadws.dcm4chee.Dcm4CheeDatabaseOperations;
+import edu.stanford.epad.epadws.dcm4chee.Dcm4CheeOperations;
 import edu.stanford.epad.epadws.epaddb.DatabaseUtils;
 import edu.stanford.epad.epadws.epaddb.EpadDatabase;
 import edu.stanford.epad.epadws.epaddb.EpadDatabaseOperations;
+import edu.stanford.epad.epadws.handlers.core.ProjectReference;
+import edu.stanford.epad.epadws.handlers.core.SeriesReference;
+import edu.stanford.epad.epadws.handlers.core.StudyReference;
+import edu.stanford.epad.epadws.handlers.core.SubjectReference;
 import edu.stanford.epad.epadws.models.DisabledTemplate;
 import edu.stanford.epad.epadws.models.EpadFile;
 import edu.stanford.epad.epadws.models.EpadStatistics;
@@ -139,6 +148,7 @@ import edu.stanford.epad.epadws.models.ProjectToPlugin;
 import edu.stanford.epad.epadws.models.ProjectToPluginParameter;
 import edu.stanford.epad.epadws.models.ProjectToSubject;
 import edu.stanford.epad.epadws.models.ProjectToSubjectToStudy;
+import edu.stanford.epad.epadws.models.ProjectToSubjectToStudyToSeriesToUserStatus;
 import edu.stanford.epad.epadws.models.ProjectToSubjectToUser;
 import edu.stanford.epad.epadws.models.ProjectToUser;
 import edu.stanford.epad.epadws.models.ProjectType;
@@ -299,8 +309,13 @@ public class DefaultEpadProjectOperations implements EpadProjectOperations {
 		user.setFirstName(firstName);
 		user.setLastName(lastName);
 		user.setEmail(email);
+		if (password==null || password.equals("")) {
+			password="ePad123!";
+			log.info("Password empty. Setting default password as "+password);
+		}
+			
 		String hashedPW = BCrypt.hashpw(password, BCrypt.gensalt());
-		//log.info("Password:" + password + " hash:" + hashedPW);
+//		log.info("Password:" + password + " hash:" + hashedPW);
 		user.setPassword(hashedPW);
 		user.setColorpreference(colorpreference);
 		String[] defaultPerms = EPADConfig.getParamValue("DefaultUserPermissions", User.CreateProjectPermission).split(",");
@@ -379,6 +394,254 @@ public class DefaultEpadProjectOperations implements EpadProjectOperations {
 		return user;
 	}
 
+	
+	/* start of series get and set annotation status */
+	@Override
+	public void updateAnnotationStatus(String username,
+			SeriesReference seriesReference, String annotationStatus,
+			String sessionID) throws Exception {
+		Project p=getProject(seriesReference.projectID);
+		Subject su=getSubject(seriesReference.subjectID);
+		Study st=getStudy(seriesReference.studyUID);
+		User u=getUser(username);
+		
+		//check if the user exist in the project
+		//only occasion this can happen in epad is with admin.
+		//TODO better error reporting to ui
+		if (!isUserInProject(u.getId(), p.getId())) {
+			log.info("User doesn't exist in project, cannot update status");
+			return;
+		}
+		ProjectToSubjectToStudyToSeriesToUserStatus psssuStatus = (ProjectToSubjectToStudyToSeriesToUserStatus) 
+				new ProjectToSubjectToStudyToSeriesToUserStatus().getObject("project_id="+p.getId()+ " and subject_id=" 
+					+ su.getId() + " and study_id=" 
+					+ st.getId() + " and series_uid='" + seriesReference.seriesUID + "' and user_id=" +u.getId() );
+		if (psssuStatus==null) {
+			psssuStatus = new ProjectToSubjectToStudyToSeriesToUserStatus();
+			psssuStatus.setProjectId(p.getId());
+			psssuStatus.setSubjectId(su.getId());
+			psssuStatus.setStudyId(st.getId());
+			psssuStatus.setSeriesUID(seriesReference.seriesUID);
+			psssuStatus.setUserId(u.getId());
+		}
+		try {
+			psssuStatus.setAnnotationStatus(Integer.parseInt(annotationStatus));
+		}catch (NumberFormatException ne) {
+			if (annotationStatus.equals("DONE"))
+				psssuStatus.setAnnotationStatus(AnnotationStatus.getValueByName(annotationStatus).getCode());
+			else 
+				psssuStatus.setAnnotationStatus(AnnotationStatus.ERROR.getCode());
+		}
+		psssuStatus.save();
+	}
+	
+	
+	@Override
+	public AnnotationStatus getAnnotationStatusForUser(String projectUID, String subjectUID, String studyUID, String series_uid, String username, int numberOfSeries) {
+		try {
+			//no series fix, do not bother checking
+			if (numberOfSeries==0) 
+				return AnnotationStatus.DONE;
+			
+			Project p=null;
+			Subject su=null;
+			Study st=null;
+			User u=getUser(username);
+			
+			StringBuilder filter=new StringBuilder();
+			if (projectUID!=null)  {
+				p=getProject(projectUID);
+				filter.append(" project_id=" + p.getId());
+			}
+			if (subjectUID!=null)  {
+				su =getSubject(subjectUID);
+				filter.append(" and subject_id=" + su.getId());
+			}
+			if (studyUID!=null) {
+				st=getStudy(studyUID);
+				filter.append(" and study_id=" + st.getId());
+						
+			}
+			if (series_uid!=null) {
+				filter.append(" and series_uid='" + series_uid+ "'");
+			}
+			//username cannot be null
+			if (username==null) {
+				log.info("Username cannot be null");
+				return AnnotationStatus.ERROR;
+			}
+			filter.append(" and user_id=" + u.getId());
+				
+			//check from series
+			List<ProjectToSubjectToStudyToSeriesToUserStatus> psssuStatusList=
+					new ProjectToSubjectToStudyToSeriesToUserStatus().getObjects(filter.toString());
+			log.info("filter "+filter.toString());
+			if (psssuStatusList!=null) {
+				if (psssuStatusList.size()==1 && numberOfSeries==1) //series level 
+					return AnnotationStatus.getValue(psssuStatusList.get(0).getAnnotationStatus());
+				else { //we need cumulative result
+					int doneCount=0;
+					int inProgressCount=0;
+					for (ProjectToSubjectToStudyToSeriesToUserStatus psssu:psssuStatusList) {
+						if (psssu.getAnnotationStatus()==AnnotationStatus.DONE.getCode()) {
+							doneCount++;
+						}
+						if (psssu.getAnnotationStatus()==AnnotationStatus.IN_PROGRESS.getCode()) {
+							inProgressCount++;
+						}
+					}
+					log.info("Done "+doneCount + " numberOfSeries "+numberOfSeries+ " inprogress "+ inProgressCount);
+					//i need to use <+ because of the dso series. 
+					if (numberOfSeries<=doneCount) 
+						return AnnotationStatus.DONE;
+					else if (doneCount+inProgressCount >0 )
+						return AnnotationStatus.IN_PROGRESS;
+					
+				}
+			}
+			//end of check from series
+				
+			return AnnotationStatus.NOT_STARTED;
+		} catch (Exception e) {
+			log.info("Cannot get annotation status from database for series "+ series_uid+ " " + e.getMessage());
+			return AnnotationStatus.ERROR;
+		}
+		
+	}
+	/* end of series get and set annotation status */
+	private final Dcm4CheeDatabaseOperations dcm4CheeDatabaseOperations = Dcm4CheeDatabase.getInstance()
+			.getDcm4CheeDatabaseOperations();
+	/* start of study set annotation status */
+	@Override
+	public void updateAnnotationStatus(String username,
+			StudyReference studyReference, String annotationStatus,
+			String sessionID) throws Exception {
+		Project p=getProject(studyReference.projectID);
+		Subject su=getSubject(studyReference.subjectID);
+		Study st=getStudy(studyReference.studyUID);
+		User u=getUser(username);
+		
+		//check if the user exist in the project
+		//only occasion this can happen in epad is with admin.
+		//TODO better error reporting to ui
+		if (!isUserInProject(u.getId(), p.getId())) {
+			log.info("User doesn't exist in project, cannot update status");
+			return;
+		}
+		
+		//get all the series and update status for them
+		Set<String> seriesList=dcm4CheeDatabaseOperations.getNonDSOSeriesUIDsInStudy(st.getStudyUID());
+		
+		for (String seriesUID:seriesList) {
+			updateAnnotationStatus(username, new SeriesReference(studyReference.projectID, studyReference.subjectID, studyReference.studyUID, seriesUID), annotationStatus, sessionID);
+		}
+		
+	
+		
+	}
+	/* end of study set annotation status */
+	/* start of subject set annotation status */
+	@Override
+	public void updateAnnotationStatus(String username,
+			SubjectReference subjectReference, String annotationStatus,
+			String sessionID) throws Exception {
+		Project p=getProject(subjectReference.projectID);
+		Subject su=getSubject(subjectReference.subjectID);
+		User u=getUser(username);
+		
+		//check if the user exist in the project
+		//only occasion this can happen in epad is with admin.
+		//TODO better error reporting to ui
+		if (!isUserInProject(u.getId(), p.getId())) {
+			log.info("User doesn't exist in project, cannot update status");
+			return;
+		}
+		//get all the studies, then series and update series status
+		List<Study> studyList=getStudiesForSubject(su.getSubjectUID());
+		for (Study study:studyList) {
+			Set<String> seriesList=dcm4CheeDatabaseOperations.getNonDSOSeriesUIDsInStudy(study.getStudyUID());
+			
+			for (String seriesUID:seriesList) {
+				updateAnnotationStatus(username, new SeriesReference(subjectReference.projectID, subjectReference.subjectID, study.getStudyUID(), seriesUID), annotationStatus, sessionID);
+			}
+		}
+	}
+
+	/* end of subject set annotation status */
+	
+	/* start of subject set annotation status */
+	@Override
+	public void updateAnnotationStatus(String username,
+			ProjectReference projectReference, String annotationStatus,
+			String sessionID) throws Exception {
+		Project p=getProject(projectReference.projectID);
+		User u=getUser(username);
+		
+		//check if the user exist in the project
+		//only occasion this can happen in epad is with admin.
+		//TODO better error reporting to ui
+		if (!isUserInProject(u.getId(), p.getId())) {
+			log.info("User doesn't exist in project, cannot update status");
+			return;
+		}
+		
+		//get all the subjects, then studies, then series and update series status
+		List<Subject> subjectList = getSubjectsForProject(projectReference.projectID);
+		for (Subject subject:subjectList) {
+			List<Study> studyList=getStudiesForSubject(subject.getSubjectUID());
+			for (Study study:studyList) {
+				Set<String> seriesList=dcm4CheeDatabaseOperations.getNonDSOSeriesUIDsInStudy(study.getStudyUID());
+				
+				for (String seriesUID:seriesList) {
+					updateAnnotationStatus(username, new SeriesReference(projectReference.projectID, subject.getSubjectUID(), study.getStudyUID(), seriesUID), annotationStatus, sessionID);
+				}
+			}
+		}
+	}
+
+	/* end of project set annotation status */
+	
+	
+	//can return incorrect result for NOT_STARTED as there is possibly no tuple for that!!
+	@Override
+	public int getAnnotationStatusUserCount(String projectUID, String subjectUID, String studyUID, String series_uid, AnnotationStatus status) {
+		try {
+			Project p=null;
+			Subject su=null;
+			Study st=null;
+			
+			StringBuilder filter=new StringBuilder();
+			filter.append("annotationstatus="+status.getCode());
+			if (projectUID!=null)  {
+				p=getProject(projectUID);
+				filter.append(" and user_id in (select user_id from " +
+					ProjectToUser.DBTABLE + " where project_id=" + p.getId()
+					+") ");
+				filter.append(" and project_id=" + p.getId());
+			}
+			if (subjectUID!=null)  {
+				su =getSubject(subjectUID);
+				filter.append(" and subject_id=" + su.getId());
+			}
+			if (studyUID!=null) {
+				st=getStudy(studyUID);
+				filter.append(" and study_id=" + st.getId());
+			}
+			if (series_uid!=null) {
+				filter.append(" and series_uid='" + series_uid+ "'");
+			}
+				
+				
+			//get the status of users in this project
+			int count = new ProjectToSubjectToStudyToSeriesToUserStatus().getCount(filter.toString());
+			return count;
+		} catch (Exception e) {
+			log.info("Cannot get annotation status from database for series "+ series_uid+ " " + e.getMessage());
+		}
+		return 0;
+	}
+
+	
 	/* (non-Javadoc)
 	 * @see edu.stanford.epad.epadws.service.EpadProjectOperations#setAdmin(java.lang.String, java.lang.String)
 	 */
@@ -402,7 +665,7 @@ public class DefaultEpadProjectOperations implements EpadProjectOperations {
 		User user = getUser(username);
 		if (loggedInUser != null && !loggedInUser.isAdmin() && !loggedInUserName.equals(user.getCreator()))
 			throw new Exception("No permission to modify user");
-		user.setAdmin(true);
+		user.setAdmin(false);
 		user.save();
 		userCache.put(user.getUsername(), user);
 	}
@@ -445,6 +708,7 @@ public class DefaultEpadProjectOperations implements EpadProjectOperations {
 		if (!requestor.isAdmin() && !loggedInUser.equals(user.getCreator()))
 			throw new Exception("No permissions to delete user");
 		try {
+			new ProjectToSubjectToStudyToSeriesToUserStatus().deleteObjects(" user_id =" + user.getId());
 			user.delete();
 			userCache.remove(user.getUsername());
 		} catch (Exception x) {
@@ -610,6 +874,7 @@ public class DefaultEpadProjectOperations implements EpadProjectOperations {
 			String username) throws Exception {
 		User user = getUser(username);
 		Project project = getProject(projectId);
+		new ProjectToSubjectToStudyToSeriesToUserStatus().deleteObjects(" project_id =" + project.getId()+ " and user_id=" + user.getId());
 		ProjectToUser ptou = (ProjectToUser) new ProjectToUser().getObject("project_id = " + project.getId() + " and user_id=" + user.getId());
 		if (ptou != null)
 			ptou.delete();
@@ -737,6 +1002,7 @@ public class DefaultEpadProjectOperations implements EpadProjectOperations {
 		subject = (Subject) subject.getObject("subjectuid = " + subject.toSQL(subjectUID));
 		Project project = new Project();
 		project = (Project) project.getObject("projectId = " + project.toSQL(projectId));
+
 		List<ProjectToSubject> ptss = new ProjectToSubject().getObjects("subject_id=" + subject.getId());
 		//ml null checks added for the bug occured after delete subject
 		if (ptss!=null && ptss.size() == 1 && ( subject.getCreator()==null || subject.getCreator().equals("admin")))
@@ -871,13 +1137,19 @@ public class DefaultEpadProjectOperations implements EpadProjectOperations {
 			return true;
 	}
 
+	@Override
+	public EpadFile createFile(String loggedInUser, String projectID,
+			String subjectUID, String studyUID, String seriesUID, File file,
+			String filename, String description, FileType fileType) throws Exception {
+		return createFile(loggedInUser, projectID, subjectUID, studyUID, seriesUID, file, filename, description, fileType, null);
+	}
 	/* (non-Javadoc)
 	 * @see edu.stanford.epad.epadws.service.EpadProjectOperations#createFile(java.lang.String, java.lang.String, java.lang.String, java.lang.String, java.lang.String, java.io.File, java.lang.String, java.lang.String, edu.stanford.epad.epadws.models.FileType)
 	 */
 	@Override
 	public EpadFile createFile(String loggedInUser, String projectID,
 			String subjectUID, String studyUID, String seriesUID, File file,
-			String filename, String description, FileType fileType) throws Exception {
+			String filename, String description, FileType fileType, String templateLevelType) throws Exception {
 		User requestor = getUser(loggedInUser);
 		EpadFile efile = new EpadFile();
 		efile.setName(filename);
@@ -925,6 +1197,8 @@ public class DefaultEpadProjectOperations implements EpadProjectOperations {
 		efile.setLength(file.length());
 		if (description != null)
 			efile.setDescription(description);
+		//set templateleveltype
+		efile.setTemplateLevelType(templateLevelType);
 		efile.save();
 		File parent = new File(efile.getFilePath());
 		parent.mkdirs();
@@ -1130,6 +1404,24 @@ public class DefaultEpadProjectOperations implements EpadProjectOperations {
 		return users;
 	}
 	
+	@Override
+	public long getUserCountProject(String projectId) throws Exception {
+		Project project = getProject(projectId);
+		if (project == null) return 0;
+		
+		return getUserCountForProject(project.getId());
+	}
+	
+	@Override
+	public long getUserCountForProject(long id)
+			throws Exception {
+		long count = new User().getCount("id in (select user_id from " 
+				+ ProjectToUser.DBTABLE 
+				+ " where project_id =" + id + ")");
+		return count;
+	}
+	
+	
 	/* (non-Javadoc)
 	 * @see edu.stanford.epad.epadws.service.EpadProjectOperations#getUsersWithRoleForProject(java.lang.String)
 	 */
@@ -1313,12 +1605,26 @@ public class DefaultEpadProjectOperations implements EpadProjectOperations {
 		if (psss.size() == 0) return projects;
 		List objects = new Project().getObjects("id in (select project_id from " 
 													+ ProjectToSubject.DBTABLE 
-													+ " where id in (" + getIdList(psss) + "))");
+													+ " where id in (" + getProjectToSubjectIdList(psss) + "))");
 		projects.addAll(objects);
+		log.info("study "+ study.getId() + "projecttosubj "+ getProjectToSubjectIdList(psss));
 		
 		return projects;
 	}
 
+	
+	/* (non-Javadoc)
+	 * @see edu.stanford.epad.epadws.service.EpadProjectOperations#getStudiesForProjectAndSubject(java.lang.String, java.lang.String)
+	 */
+	@Override
+	public List<Study> getStudiesOlderThanDays(Integer days) throws Exception {
+		List<Study> studies = new ArrayList<Study>();
+		List objects = new Study().getObjects("DATE_SUB(CURDATE(),INTERVAL "+days+" DAY) >updatetime");
+		studies.addAll(objects);
+		return studies;
+	}
+
+	
 	/* (non-Javadoc)
 	 * @see edu.stanford.epad.epadws.service.EpadProjectOperations#getStudiesForProjectAndSubject(java.lang.String, java.lang.String)
 	 */
@@ -1327,8 +1633,11 @@ public class DefaultEpadProjectOperations implements EpadProjectOperations {
 			String subjectUID) throws Exception {
 		Project project = getProject(projectId);
 		Subject subject = getSubject(subjectUID);
-		ProjectToSubject ptos = (ProjectToSubject) new ProjectToSubject().getObject("project_id = " + project.getId() + " and subject_id=" + subject.getId());
 		List<Study> studies = new ArrayList<Study>();
+		//if we cannot retrieve the project or subject, we should return empty list 
+		if (project == null || subject == null)
+			return studies;
+		ProjectToSubject ptos = (ProjectToSubject) new ProjectToSubject().getObject("project_id = " + project.getId() + " and subject_id=" + subject.getId());
 		if (ptos == null)
 			return studies;
 		List objects = new Study().getObjects("id in (select study_id from " 
@@ -1984,6 +2293,7 @@ public class DefaultEpadProjectOperations implements EpadProjectOperations {
 		new RemotePACQuery().deleteObjects("project_id=" + project.getId());
 		new WorkListToStudy().deleteObjects("project_id=" + project.getId());
 		new WorkListToSubject().deleteObjects("project_id=" + project.getId());
+		new ProjectToSubjectToStudyToSeriesToUserStatus().deleteObjects(" project_id =" + project.getId());
 		try {
 			project.delete();
 			projectCache.remove(project.getProjectId());
@@ -2020,6 +2330,7 @@ public class DefaultEpadProjectOperations implements EpadProjectOperations {
 			new ProjectToSubjectToStudy().deleteObjects("proj_subj_id =" + projSubj.getId());
 			projSubj.delete();
 		}
+		new ProjectToSubjectToStudyToSeriesToUserStatus().deleteObjects(" project_id =" + project.getId() + " and subject_id=" + subject.getId());
 		new WorkListToSubject().deleteObjects("subject_id =" + subject.getId() + " and project_id =" + project.getId());			
 		List projSubjs = new ProjectToSubject().getObjects("subject_id=" + subject.getId());
 		// TODO: delete subject if not used any more
@@ -2055,6 +2366,7 @@ public class DefaultEpadProjectOperations implements EpadProjectOperations {
 			ProjectToSubjectToStudy projSubjStudy = (ProjectToSubjectToStudy) new ProjectToSubjectToStudy().getObject("proj_subj_id =" + projSubj.getId() + " and study_id=" + study.getId());
 			if (projSubjStudy != null) projSubjStudy.delete();
 		}
+		new ProjectToSubjectToStudyToSeriesToUserStatus().deleteObjects("study_id =" + study.getId() + " and project_id =" + project.getId() + " and subject_id=" + subject.getId());
 		new WorkListToStudy().deleteObjects("study_id =" + study.getId() + " and project_id =" + project.getId());			
 		List<ProjectToSubjectToStudy> projSubjStudys = new ProjectToSubjectToStudy().getObjects("study_id=" + study.getId());
 		if (projSubjStudys.size() == 0)
@@ -2086,9 +2398,12 @@ public class DefaultEpadProjectOperations implements EpadProjectOperations {
 		List<Study> studies = new Study().getObjects("subject_id = " + subject.getId());
 		for (Study study: studies)
 		{
-			new WorkListToStudy().deleteObjects("study_id =" + study.getId());			
+			new WorkListToStudy().deleteObjects("study_id =" + study.getId());
+			//delete files first
+			new EpadFile().deleteObjects("study_id=" + study.getId());
 			study.delete();
 		}
+		new ProjectToSubjectToStudyToSeriesToUserStatus().deleteObjects("subject_id=" + subject.getId());
 		new EpadFile().deleteObjects("subject_id=" + subject.getId());
 		new WorkListToSubject().deleteObjects("subject_id =" + subject.getId());			
 		subject.delete();
@@ -2101,8 +2416,8 @@ public class DefaultEpadProjectOperations implements EpadProjectOperations {
 	public void deleteStudy(String username, String studyUID) throws Exception {
 		Study study = getStudy(studyUID);
 		if (study == null) return;
-		ProjectToSubjectToStudy projSubjStudy = (ProjectToSubjectToStudy) new ProjectToSubjectToStudy().getObject("study_id=" + study.getId());
-		projSubjStudy.delete();
+		new ProjectToSubjectToStudyToSeriesToUserStatus().deleteObjects("study_id=" + study.getId());
+		new ProjectToSubjectToStudy().deleteObjects("study_id=" + study.getId());
 		new EpadFile().deleteObjects("study_id=" + study.getId());
 		study.delete();
 	}
@@ -2339,13 +2654,27 @@ public class DefaultEpadProjectOperations implements EpadProjectOperations {
 		return objects;
 	}
 	
+	private String getProjectToSubjectIdList(List<AbstractDAO> objects)
+	{
+		if (objects == null) return "";
+		String list = "";
+		for (AbstractDAO object: objects)
+		{
+			list += "," + ((ProjectToSubjectToStudy)object).getProjSubjId();
+		}
+		if (list.length() > 0)
+			return list.substring(1);
+		else
+			return list;
+	}
+	
 	private String getIdList(List<AbstractDAO> objects)
 	{
 		if (objects == null) return "";
 		String list = "";
 		for (AbstractDAO object: objects)
 		{
-			list = "," + object.getId();
+			list += "," + object.getId();
 		}
 		if (list.length() > 0)
 			return list.substring(1);

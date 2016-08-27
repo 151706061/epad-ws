@@ -113,6 +113,8 @@ import java.sql.Statement;
 import java.sql.Timestamp;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
+import java.util.Collections;
+import java.util.Comparator;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.HashSet;
@@ -307,6 +309,22 @@ public class DefaultDcm4CheeDatabaseOperations implements Dcm4CheeDatabaseOperat
 		for (Map<String, String> series : seriesInStudy) {
 			String seriesID = series.get("series_iuid");
 			result.add(seriesID);
+		}
+		return result;
+	}
+	
+	
+	@Override
+	public Set<String> getNonDSOSeriesUIDsInStudy(String studyUID)
+	{
+		List<Map<String, String>> seriesInStudy = getAllSeriesInStudy(studyUID);
+		Set<String> result = new HashSet<String>();
+
+		for (Map<String, String> series : seriesInStudy) {
+			if (!series.get("modality").trim().equals("SEG")) {
+				String seriesID = series.get("series_iuid");
+				result.add(seriesID);
+			}
 		}
 		return result;
 	}
@@ -606,6 +624,35 @@ public class DefaultDcm4CheeDatabaseOperations implements Dcm4CheeDatabaseOperat
 		} finally {
 			close(c, ps, rs);
 		}
+		
+		//check if the images list has proper instance numbers
+		//if not order the slices
+		//we should read the required tags and then use that to sort instead of using just the slicelocation
+//		if(!(retVal.get(0).instanceNumber==1 && retVal.get(retVal.size()-1).instanceNumber== retVal.size())) {
+		if(retVal.get(retVal.size()-1).instanceNumber-retVal.get(0).instanceNumber+1 != retVal.size()) {
+			//sort before filling image list
+			//but we just have slice location
+			//the image showed darker after doing this, why??
+			Collections.sort(retVal, new Comparator<DCM4CHEEImageDescription>() {
+			    @Override
+			    public int compare(DCM4CHEEImageDescription o1, DCM4CHEEImageDescription o2) {
+			    	Double o1Loc=Double.parseDouble(o1.sliceLocation);
+			    	Double o2Loc=Double.parseDouble(o2.sliceLocation);
+			    	//use the reverse order 
+			        return -1*o1Loc.compareTo(o2Loc);
+			    }
+
+			});
+			
+			//update instance numbers after sorting
+			
+			for(int i=1; i<=retVal.size(); i++) {
+				retVal.get(i-1).instanceNumber=i;
+				
+			}
+			
+		}
+		
 		return retVal;
 	}
 
@@ -657,7 +704,18 @@ public class DefaultDcm4CheeDatabaseOperations implements Dcm4CheeDatabaseOperat
 		String updatedTime = resultMap.get("updated_time");
 		String createdTime = resultMap.get("created_time");
 		String classUID = resultMap.get("sop_cuid");
-
+		String inst_attrs = resultMap.get("inst_attrs_ch").replaceAll("\"", "").replaceAll("\n", "").replaceAll("\r", "").replace(System.getProperty("line.separator"), "").replaceAll("R.DS", "RDS").replaceAll("S.DS", "SDS");
+		//ml rescale slope and intercept added
+		if ((inst_attrs!=null) && (inst_attrs.indexOf("RDS")!=-1) && inst_attrs.indexOf("SDS")!=-1) {
+			String rescaleIntercept = inst_attrs.substring(inst_attrs.indexOf("RDS")+3,inst_attrs.indexOf("(",inst_attrs.indexOf("RDS"))).trim();
+			String rescaleSlope = inst_attrs.substring(inst_attrs.indexOf("SDS")+3).trim();
+			if (rescaleSlope.contains(" "))
+				rescaleSlope = rescaleSlope.split(" ")[0].trim();
+			return new DCM4CHEEImageDescription(studyUID, seriesUID, imageUID, instanceNumber, sliceLocation, contentTime,
+					updatedTime, createdTime, classUID,rescaleIntercept, rescaleSlope);
+		}
+		
+		//ml if no rescale slope and intercept use the old version
 		return new DCM4CHEEImageDescription(studyUID, seriesUID, imageUID, instanceNumber, sliceLocation, contentTime,
 				updatedTime, createdTime, classUID);
 	}
